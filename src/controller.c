@@ -1,4 +1,4 @@
-#define WIN32_LEAN_AND_MEAN
+﻿#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
 #include <stdlib.h>
@@ -8,11 +8,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.23-target-google-drive-livedot"
+#define TOOL_VERSION L"v0.31-message-pump-hook-dispatch"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.23.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.31.dll"
 
 typedef struct SyncWorkerContext {
     HANDLE stop_event;
@@ -23,6 +23,7 @@ typedef struct SyncWorkerContext {
 typedef struct CurrentScanContext {
     int matches;
     int hidden_windows;
+    int hidden_guid_icons;
 } CurrentScanContext;
 
 static void write_utf8(HANDLE handle, const wchar_t *format, ...) {
@@ -200,6 +201,7 @@ static BOOL CALLBACK scan_current_windows_proc(HWND hwnd, LPARAM lparam) {
     wchar_t exe_name[MAX_PATH];
     wchar_t class_name[256];
     wchar_t window_text[256];
+    GUID guid;
 
     GetWindowThreadProcessId(hwnd, &pid);
     if (!pid || !get_process_base_name(pid, exe_name, MAX_PATH)) {
@@ -208,6 +210,18 @@ static BOOL CALLBACK scan_current_windows_proc(HWND hwnd, LPARAM lparam) {
 
     if (!GetClassNameW(hwnd, class_name, (int)(sizeof(class_name) / sizeof(class_name[0])))) {
         return TRUE;
+    }
+
+    if (tray_rule_guid_for_process(exe_name, &guid)) {
+        NOTIFYICONDATAW data;
+        ZeroMemory(&data, sizeof(data));
+        data.cbSize = sizeof(data);
+        data.hWnd = hwnd;
+        data.uFlags = NIF_GUID;
+        data.guidItem = guid;
+        if (Shell_NotifyIconW(NIM_DELETE, &data)) {
+            ++ctx->hidden_guid_icons;
+        }
     }
 
     window_text[0] = L'\0';
@@ -230,6 +244,16 @@ static BOOL CALLBACK scan_current_windows_proc(HWND hwnd, LPARAM lparam) {
         ++ctx->matches;
     }
 
+    if (tray_rule_block_uid_for_window_class(exe_name, class_name, &uid)) {
+        NOTIFYICONDATAW data;
+        ZeroMemory(&data, sizeof(data));
+        data.cbSize = sizeof(data);
+        data.hWnd = hwnd;
+        data.uID = uid;
+        Shell_NotifyIconW(NIM_DELETE, &data);
+        ++ctx->matches;
+    }
+
     return TRUE;
 }
 
@@ -237,6 +261,7 @@ static CurrentScanContext sync_current_windows(void) {
     CurrentScanContext ctx;
     ctx.matches = 0;
     ctx.hidden_windows = 0;
+    ctx.hidden_guid_icons = 0;
     EnumWindows(scan_current_windows_proc, (LPARAM)&ctx);
     return ctx;
 }
@@ -362,6 +387,35 @@ static void print_rules(void) {
             tray_window_rule_class_name(i),
             tray_window_rule_text(i));
     }
+    out(L"GUID icon rules:\n");
+    for (int i = 0; i < tray_guid_rule_count(); ++i) {
+        const GUID *guid = tray_guid_rule_guid(i);
+        if (!guid) {
+            continue;
+        }
+        out(L"  %d. exe=%ls guid={%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}\n",
+            i + 1,
+            tray_guid_rule_exe(i),
+            guid->Data1,
+            guid->Data2,
+            guid->Data3,
+            guid->Data4[0],
+            guid->Data4[1],
+            guid->Data4[2],
+            guid->Data4[3],
+            guid->Data4[4],
+            guid->Data4[5],
+            guid->Data4[6],
+            guid->Data4[7]);
+    }
+    out(L"Shell notify block rules:\n");
+    for (int i = 0; i < tray_block_uid_rule_count(); ++i) {
+        out(L"  %d. exe=%ls class=%ls uid=%u\n",
+            i + 1,
+            tray_block_uid_rule_exe(i),
+            tray_block_uid_rule_class_name(i),
+            tray_block_uid_rule_uid(i));
+    }
 }
 
 static int command_status(void) {
@@ -372,15 +426,17 @@ static int command_status(void) {
     ctx = sync_current_windows();
     out(L"Current matched notify icons: %d\n", ctx.matches);
     out(L"Current hidden windows: %d\n", ctx.hidden_windows);
+    out(L"Current hidden GUID icons: %d\n", ctx.hidden_guid_icons);
     return 0;
 }
 
 static int command_apply(void) {
     CurrentScanContext ctx = sync_current_windows();
-    out(L"%ls apply: notify_icons=%d, hidden_windows=%d, pstf_readtray=not_sent\n",
+    out(L"%ls apply: notify_icons=%d, hidden_windows=%d, guid_icons=%d, pstf_readtray=not_sent\n",
         TOOL_VERSION,
         ctx.matches,
-        ctx.hidden_windows);
+        ctx.hidden_windows,
+        ctx.hidden_guid_icons);
     return 0;
 }
 
@@ -491,7 +547,24 @@ static int command_start(void) {
     }
 
     out(L"%ls started\n", TOOL_VERSION);
-    WaitForSingleObject(stop_event, INFINITE);
+    for (;;) {
+        DWORD wait;
+        MSG msg;
+
+        wait = MsgWaitForMultipleObjects(1, &stop_event, FALSE, INFINITE, QS_ALLINPUT);
+        if (wait == WAIT_OBJECT_0) {
+            break;
+        }
+        if (wait == WAIT_OBJECT_0 + 1) {
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            continue;
+        }
+        err(L"Hook wait failed: %lu\n", GetLastError());
+        break;
+    }
 
     UnhookWindowsHookEx(call_hook);
     UnhookWindowsHookEx(msg_hook);

@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $workspace = Split-Path -Parent $root
@@ -34,7 +34,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   -I (Join-Path $root 'src') `
   (Join-Path $root 'src\hook_dll.c') `
   (Join-Path $root 'src\rules.c') `
-  -o (Join-Path $bin 'Lyrics Tray Icon Fix Hook v0.23.dll') `
+  -o (Join-Path $bin 'Lyrics Tray Icon Fix Hook v0.31.dll') `
   -luser32 -lshell32
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

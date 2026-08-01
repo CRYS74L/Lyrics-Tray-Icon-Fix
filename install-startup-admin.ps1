@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $taskName = 'Lyrics Tray Icon Fix'
@@ -17,4 +17,4 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 
-Write-Host "已创建当前用户启动项和登录计划任务: $taskName"
+Write-Host "宸插垱寤哄綋鍓嶇敤鎴峰惎鍔ㄩ」鍜岀櫥褰曡鍒掍换鍔? $taskName"

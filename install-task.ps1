@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $taskName = 'Lyrics Tray Icon Fix'
@@ -9,4 +9,4 @@ $value = '"' + $wscript + '" "' + $launcher + '"'
 
 New-Item -Path $runKey -Force | Out-Null
 Set-ItemProperty -Path $runKey -Name $taskName -Value $value -Type String
-Write-Host "已创建当前用户登录启动项: $taskName"
+Write-Host "宸插垱寤哄綋鍓嶇敤鎴风櫥褰曞惎鍔ㄩ」: $taskName"
