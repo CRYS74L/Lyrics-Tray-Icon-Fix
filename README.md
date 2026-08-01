@@ -1,8 +1,8 @@
 # Lyrics Tray Icon Fix
 
-这是一个为个人用途编写的 Windows 托盘图标修复工具，用来隐藏 BetterLyrics、Lyricify Lite 以及 Windows 音频相关托盘中错误或不需要显示的特定图标。
+这是一个为个人用途编写的 Windows 托盘图标修复工具，用来隐藏 BetterLyrics、Lyricify Lite、Windows 音频以及 Google Drive 相关托盘中错误或不需要显示的特定图标。
 
-当前版本：`v0.22-target-explorer-audio-icons`。
+当前版本：`v0.23-target-google-drive-livedot`。
 
 ## 用途
 
@@ -14,28 +14,31 @@
 LYRICIFY LITE.EXE + H.NotifyIcon_* + UID=0
 BETTERLYRICS.WINUI3.EXE + H.NotifyIcon_* + UID=0
 EXPLORER.EXE + ATL:* + UID=100
+GOOGLEDRIVEFS.EXE + DriveDot + 窗口标题=Google 云端硬盘实时编辑状态
 ```
 
 其中 `EXPLORER.EXE + ATL:* + UID=100` 用于处理已观察到的 Windows 音频托盘图标，例如“音频服务未运行。”和“音箱 (USB): 26%”。规则同时限定进程、窗口类前缀和 UID，避免影响 explorer.exe 的其他托盘图标。
+
+`GOOGLEDRIVEFS.EXE + DriveDot + 窗口标题=Google 云端硬盘实时编辑状态` 用于隐藏 Google Drive 额外出现、且不能被 PS Tray Factory 按传统托盘图标识别的实时编辑状态窗口。它不会删除截图中 PS Tray Factory 可识别的 `ATL:* + UID=11376` 正常 Google Drive 托盘图标。
 
 ## 使用
 
 普通使用请从 GitHub Releases 下载完整包，解压到固定目录后运行：
 
 ```text
-Install and start v0.22.cmd
+Install and start v0.23.cmd
 ```
 
 查看状态：
 
 ```text
-Status v0.22.cmd
+Status v0.23.cmd
 ```
 
 停止并移除开机启动：
 
 ```text
-Stop and disable v0.22.cmd
+Stop and disable v0.23.cmd
 ```
 
 开机启动项使用当前用户的：
@@ -52,7 +55,7 @@ HKCU Run -> wscript.exe -> run-hidden.vbs -> bin\Lyrics Tray Icon Fix.exe start
 
 ## 实现方式
 
-v0.22 仍使用 Windows 消息 Hook：
+v0.23 仍使用 Windows 消息 Hook：
 
 ```text
 WH_CALLWNDPROC

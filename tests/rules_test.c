@@ -21,12 +21,22 @@ static int expect_target(const wchar_t *exe, int expected, const char *name) {
     return 0;
 }
 
+static int expect_hide_window(const wchar_t *exe, const wchar_t *class_name, const wchar_t *window_text, int expected, const char *name) {
+    int actual = tray_rule_should_hide_window(exe, class_name, window_text);
+    if (actual != expected) {
+        printf("FAIL %s: expected %d got %d\n", name, expected, actual);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 
     failures += expect_target(L"Lyricify Lite.exe", 1, "lyricify target process");
     failures += expect_target(L"BetterLyrics.WinUI3.exe", 1, "betterlyrics target process");
     failures += expect_target(L"explorer.exe", 1, "explorer target process");
+    failures += expect_target(L"GoogleDriveFS.exe", 1, "google drive target process");
     failures += expect_target(L"Other.exe", 0, "other process is ignored");
 
     failures += expect_match(L"Lyricify Lite.exe", L"H.NotifyIcon_e87a2320-3a24-461c-99f6-c38bf4eb8d8b", 0, 1, "lyricify wrong icon");
@@ -39,6 +49,11 @@ int main(void) {
     failures += expect_match(L"explorer.exe", L"ATL:00007FFF4A42A050", 100, 1, "usb speaker tray icon");
     failures += expect_match(L"explorer.exe", L"ATL:00007FFE7B28A050", 0, 0, "audio service uid must be exact");
     failures += expect_match(L"explorer.exe", L"Shell_TrayWnd", 100, 0, "audio service class must be atl");
+    failures += expect_match(L"GoogleDriveFS.exe", L"ATL:00007FF7481AE710", 11376, 0, "google drive normal tray icon is not deleted");
+    failures += expect_hide_window(L"GoogleDriveFS.exe", L"DriveDot", L"Google 云端硬盘实时编辑状态", 1, "google drive live edit dot");
+    failures += expect_hide_window(L"GoogleDriveFS.exe", L"DriveDot", L"Google 云端硬盘", 0, "google drive dot text must match");
+    failures += expect_hide_window(L"GoogleDriveFS.exe", L"ATL:00007FF7481AE710", L"", 0, "google drive normal atl window is not hidden");
+    failures += expect_hide_window(L"Other.exe", L"DriveDot", L"Google 云端硬盘实时编辑状态", 0, "drive dot rule requires exe");
 
     if (failures) {
         return 1;

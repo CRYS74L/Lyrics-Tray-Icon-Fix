@@ -4,11 +4,21 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $workspace = Split-Path -Parent $root
 $zig = Join-Path $workspace 'tools\zig\zig.exe'
 if (-not (Test-Path -LiteralPath $zig)) {
-  throw 'zig.exe not found'
+  $zigCommand = Get-Command zig.exe -ErrorAction SilentlyContinue
+  if (-not $zigCommand) {
+    throw 'zig.exe not found. Install Zig and add it to PATH, or put it at ..\tools\zig\zig.exe.'
+  }
+  $zig = $zigCommand.Source
 }
 $bin = Join-Path $root 'bin'
+$zigCache = Join-Path $root '.zig-cache'
+$zigGlobalCache = Join-Path $root '.zig-global-cache'
 
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
+New-Item -ItemType Directory -Force -Path $zigCache | Out-Null
+New-Item -ItemType Directory -Force -Path $zigGlobalCache | Out-Null
+$env:ZIG_LOCAL_CACHE_DIR = $zigCache
+$env:ZIG_GLOBAL_CACHE_DIR = $zigGlobalCache
 
 & $zig cc -target x86_64-windows-gnu -DUNICODE -D_UNICODE `
   -I (Join-Path $root 'src') `
@@ -24,7 +34,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   -I (Join-Path $root 'src') `
   (Join-Path $root 'src\hook_dll.c') `
   (Join-Path $root 'src\rules.c') `
-  -o (Join-Path $bin 'Lyrics Tray Icon Fix Hook v0.22.dll') `
+  -o (Join-Path $bin 'Lyrics Tray Icon Fix Hook v0.23.dll') `
   -luser32 -lshell32
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

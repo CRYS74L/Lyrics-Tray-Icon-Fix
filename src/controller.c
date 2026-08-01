@@ -1,17 +1,18 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
+#include <stdlib.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <wchar.h>
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.22-target-explorer-audio-icons"
+#define TOOL_VERSION L"v0.23-target-google-drive-livedot"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.22.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.23.dll"
 
 typedef struct SyncWorkerContext {
     HANDLE stop_event;
@@ -21,6 +22,7 @@ typedef struct SyncWorkerContext {
 
 typedef struct CurrentScanContext {
     int matches;
+    int hidden_windows;
 } CurrentScanContext;
 
 static void write_utf8(HANDLE handle, const wchar_t *format, ...) {
@@ -197,6 +199,7 @@ static BOOL CALLBACK scan_current_windows_proc(HWND hwnd, LPARAM lparam) {
     DWORD pid = 0;
     wchar_t exe_name[MAX_PATH];
     wchar_t class_name[256];
+    wchar_t window_text[256];
 
     GetWindowThreadProcessId(hwnd, &pid);
     if (!pid || !get_process_base_name(pid, exe_name, MAX_PATH)) {
@@ -204,6 +207,14 @@ static BOOL CALLBACK scan_current_windows_proc(HWND hwnd, LPARAM lparam) {
     }
 
     if (!GetClassNameW(hwnd, class_name, (int)(sizeof(class_name) / sizeof(class_name[0])))) {
+        return TRUE;
+    }
+
+    window_text[0] = L'\0';
+    GetWindowTextW(hwnd, window_text, (int)(sizeof(window_text) / sizeof(window_text[0])));
+    if (tray_rule_should_hide_window(exe_name, class_name, window_text)) {
+        ShowWindow(hwnd, SW_HIDE);
+        ++ctx->hidden_windows;
         return TRUE;
     }
 
@@ -222,11 +233,12 @@ static BOOL CALLBACK scan_current_windows_proc(HWND hwnd, LPARAM lparam) {
     return TRUE;
 }
 
-static int sync_current_windows(void) {
+static CurrentScanContext sync_current_windows(void) {
     CurrentScanContext ctx;
     ctx.matches = 0;
+    ctx.hidden_windows = 0;
     EnumWindows(scan_current_windows_proc, (LPARAM)&ctx);
-    return ctx.matches;
+    return ctx;
 }
 
 static void process_sync_line(wchar_t *line, int *changed) {
@@ -334,7 +346,7 @@ static int is_running(void) {
 
 static void print_rules(void) {
     out(L"Version: %ls\n", TOOL_VERSION);
-    out(L"Rules:\n");
+    out(L"Notify icon rules:\n");
     for (int i = 0; i < tray_rule_count(); ++i) {
         out(L"  %d. exe=%ls class=%ls uid=%u\n",
             i + 1,
@@ -342,20 +354,33 @@ static void print_rules(void) {
             tray_rule_class_name(i),
             tray_rule_uid(i));
     }
+    out(L"Window hide rules:\n");
+    for (int i = 0; i < tray_window_rule_count(); ++i) {
+        out(L"  %d. exe=%ls class=%ls text=%ls\n",
+            i + 1,
+            tray_window_rule_exe(i),
+            tray_window_rule_class_name(i),
+            tray_window_rule_text(i));
+    }
 }
 
 static int command_status(void) {
+    CurrentScanContext ctx;
+
     print_rules();
     out(L"Background: %ls\n", is_running() ? L"running" : L"stopped");
-    out(L"Current matched H.NotifyIcon windows: %d\n", sync_current_windows());
+    ctx = sync_current_windows();
+    out(L"Current matched notify icons: %d\n", ctx.matches);
+    out(L"Current hidden windows: %d\n", ctx.hidden_windows);
     return 0;
 }
 
 static int command_apply(void) {
-    int matches = sync_current_windows();
-    out(L"%ls apply: matched=%d, pstf_readtray=not_sent\n",
+    CurrentScanContext ctx = sync_current_windows();
+    out(L"%ls apply: notify_icons=%d, hidden_windows=%d, pstf_readtray=not_sent\n",
         TOOL_VERSION,
-        matches);
+        ctx.matches,
+        ctx.hidden_windows);
     return 0;
 }
 

@@ -74,6 +74,7 @@ static void queue_rule(const wchar_t *class_name, unsigned int uid) {
 
 static void inspect_window(HWND hwnd) {
     wchar_t class_name[256];
+    wchar_t window_text[256];
     unsigned int uid = 0;
 
     if (!g_process_is_target || !hwnd) {
@@ -81,6 +82,13 @@ static void inspect_window(HWND hwnd) {
     }
 
     if (!GetClassNameW(hwnd, class_name, (int)(sizeof(class_name) / sizeof(class_name[0])))) {
+        return;
+    }
+
+    window_text[0] = L'\0';
+    GetWindowTextW(hwnd, window_text, (int)(sizeof(window_text) / sizeof(window_text[0])));
+    if (tray_rule_should_hide_window(g_process_name, class_name, window_text)) {
+        ShowWindow(hwnd, SW_HIDE);
         return;
     }
 

@@ -1,5 +1,7 @@
 bin/
 tools/
+.zig-cache/
+.zig-global-cache/
 *.exe
 *.dll
 *.pdb
