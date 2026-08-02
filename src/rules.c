@@ -23,12 +23,12 @@ typedef struct BlockUidRule {
     const wchar_t *exe_name;
     const wchar_t *class_prefix;
     unsigned int uid;
+    int use_message_hook;
 } BlockUidRule;
 
 static const TrayRule kRules[] = {
     { L"LYRICIFY LITE.EXE", L"H.NotifyIcon_", 0 },
     { L"BETTERLYRICS.WINUI3.EXE", L"H.NotifyIcon_", 0 },
-    { L"EXPLORER.EXE", L"ATL:", 100 },
 };
 
 static const GuidRule kGuidRules[] = {
@@ -36,8 +36,9 @@ static const GuidRule kGuidRules[] = {
 };
 
 static const BlockUidRule kBlockUidRules[] = {
-    { L"EXPLORER.EXE", L"ATL:", 101 },
-    { L"GOOGLEDRIVEFS.EXE", L"ATL:", 11376 },
+    { L"EXPLORER.EXE", L"ATL:", 100, 1 },
+    { L"EXPLORER.EXE", L"ATL:", 101, 1 },
+    { L"GOOGLEDRIVEFS.EXE", L"ATL:", 11376, 0 },
 };
 
 static const WindowRule kWindowRules[] = {
@@ -179,6 +180,26 @@ int tray_rule_block_uid_for_window_class(const wchar_t *exe_name, const wchar_t 
     return 0;
 }
 
+int tray_rule_block_uid_for_window_class_at(const wchar_t *exe_name, const wchar_t *class_name,
+                                            int index, unsigned int *uid) {
+    if (!exe_name || !class_name || !uid || index < 0 || index >= tray_block_uid_rule_count()) {
+        return 0;
+    }
+    if (!equals_ignore_case(exe_name, kBlockUidRules[index].exe_name) ||
+        !starts_with(class_name, kBlockUidRules[index].class_prefix)) {
+        return 0;
+    }
+    *uid = kBlockUidRules[index].uid;
+    return 1;
+}
+
+int tray_rule_block_uid_uses_message_hook(int index) {
+    if (index < 0 || index >= tray_block_uid_rule_count()) {
+        return 0;
+    }
+    return kBlockUidRules[index].use_message_hook;
+}
+
 int tray_rule_process_is_target(const wchar_t *exe_name) {
     return tray_rule_process_uses_message_hook(exe_name) ||
            tray_rule_process_uses_shell_notify_block(exe_name);
@@ -203,6 +224,13 @@ int tray_rule_process_uses_message_hook(const wchar_t *exe_name) {
 
     for (int i = 0; i < tray_guid_rule_count(); ++i) {
         if (equals_ignore_case(exe_name, kGuidRules[i].exe_name)) {
+            return 1;
+        }
+    }
+
+    for (int i = 0; i < tray_block_uid_rule_count(); ++i) {
+        if (kBlockUidRules[i].use_message_hook &&
+            equals_ignore_case(exe_name, kBlockUidRules[i].exe_name)) {
             return 1;
         }
     }

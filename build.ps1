@@ -34,8 +34,20 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   -I (Join-Path $root 'src') `
   (Join-Path $root 'src\hook_dll.c') `
   (Join-Path $root 'src\rules.c') `
-  -o (Join-Path $bin 'Lyrics Tray Icon Fix Hook v0.32.dll') `
+  -o (Join-Path $bin 'Lyrics Tray Icon Fix Hook v0.36.dll') `
   -luser32 -lshell32
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+& $zig cc -target x86-windows-gnu -O2 -shared `
+  (Join-Path $root 'src\pstf_hook_dll.c') `
+  -o (Join-Path $bin 'Lyrics Tray Icon Fix PS Restore Hook v0.36.dll') `
+  -luser32 -lshell32
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+& $zig cc -target x86-windows-gnu -DUNICODE -D_UNICODE -O2 -municode `
+  (Join-Path $root 'src\pstf_helper.c') `
+  -o (Join-Path $bin 'Lyrics Tray Icon Fix PS Restore Helper.exe') `
+  -luser32
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 & $zig cc -target x86_64-windows-gnu -DUNICODE -D_UNICODE -O2 -municode `

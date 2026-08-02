@@ -15,6 +15,14 @@ static unsigned int g_deleted_uid = 0xffffffffu;
 static DWORD g_last_delete_tick = 0;
 static int g_process_is_target = 0;
 
+#define MAX_BLOCK_DELETE_STATES 16
+typedef struct BlockDeleteState {
+    wchar_t class_name[256];
+    DWORD last_delete_tick;
+} BlockDeleteState;
+
+static BlockDeleteState g_block_delete_states[MAX_BLOCK_DELETE_STATES];
+
 typedef BOOL (WINAPI *ShellNotifyIconWFn)(DWORD, PNOTIFYICONDATAW);
 
 typedef struct DelayImportDescriptor {
@@ -173,15 +181,16 @@ static BOOL CALLBACK delete_current_block_uid_icon_proc(HWND hwnd, LPARAM lparam
         return TRUE;
     }
 
-    if (!tray_rule_block_uid_for_window_class(g_process_name, class_name, &uid)) {
-        return TRUE;
+    for (int i = 0; i < tray_block_uid_rule_count(); ++i) {
+        if (!tray_rule_block_uid_for_window_class_at(g_process_name, class_name, i, &uid)) {
+            continue;
+        }
+        ZeroMemory(&data, sizeof(data));
+        data.cbSize = sizeof(data);
+        data.hWnd = hwnd;
+        data.uID = uid;
+        Shell_NotifyIconW(NIM_DELETE, &data);
     }
-
-    ZeroMemory(&data, sizeof(data));
-    data.cbSize = sizeof(data);
-    data.hWnd = hwnd;
-    data.uID = uid;
-    Shell_NotifyIconW(NIM_DELETE, &data);
     return TRUE;
 }
 
@@ -415,6 +424,32 @@ delete_icon: ;
                 g_deleted_class_name[(sizeof(g_deleted_class_name) / sizeof(g_deleted_class_name[0])) - 1] = L'\0';
                 g_deleted_uid = uid;
             }
+        }
+    }
+
+    for (int i = 0; i < tray_block_uid_rule_count() && i < MAX_BLOCK_DELETE_STATES; ++i) {
+        BlockDeleteState *state = &g_block_delete_states[i];
+        DWORD now;
+
+        if (!tray_rule_block_uid_uses_message_hook(i) ||
+            !tray_rule_block_uid_for_window_class_at(g_process_name, class_name, i, &uid)) {
+            continue;
+        }
+        now = GetTickCount();
+        if (state->last_delete_tick == 0 ||
+            wcscmp(state->class_name, class_name) != 0 ||
+            now - state->last_delete_tick >= 1000) {
+            NOTIFYICONDATAW data;
+            ZeroMemory(&data, sizeof(data));
+            data.cbSize = sizeof(data);
+            data.hWnd = hwnd;
+            data.uID = uid;
+            state->last_delete_tick = now;
+            wcsncpy(state->class_name, class_name,
+                    (sizeof(state->class_name) / sizeof(state->class_name[0])) - 1);
+            state->class_name[(sizeof(state->class_name) /
+                               sizeof(state->class_name[0])) - 1] = L'\0';
+            Shell_NotifyIconW(NIM_DELETE, &data);
         }
     }
 }

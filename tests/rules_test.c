@@ -21,6 +21,15 @@ static int expect_target(const wchar_t *exe, int expected, const char *name) {
     return 0;
 }
 
+static int expect_message_hook(const wchar_t *exe, int expected, const char *name) {
+    int actual = tray_rule_process_uses_message_hook(exe);
+    if (actual != expected) {
+        printf("FAIL %s: expected %d got %d\n", name, expected, actual);
+        return 1;
+    }
+    return 0;
+}
+
 static int expect_hide_window(const wchar_t *exe, const wchar_t *class_name, const wchar_t *window_text, int expected, const char *name) {
     int actual = tray_rule_should_hide_window(exe, class_name, window_text);
     if (actual != expected) {
@@ -65,15 +74,16 @@ int main(void) {
     failures += expect_match(L"BetterLyrics.WinUI3.exe", L"Windows.UI.Core.CoreWindow", 0, 0, "class prevents hiding normal sibling");
     failures += expect_match(L"Other.exe", L"H.NotifyIcon_66a3fb03-7068-42a1-b1c9-861baae756c0", 0, 0, "exe prevents cross-app hiding");
 
-    failures += expect_match(L"explorer.exe", L"ATL:00007FFE7B28A050", 100, 1, "audio service tray icon");
-    failures += expect_match(L"explorer.exe", L"ATL:00007FFF4A42A050", 100, 1, "usb speaker tray icon");
-    failures += expect_match(L"explorer.exe", L"ATL:00007FF9BA0DA050", 101, 0, "microphone privacy icon is not a repeated delete rule");
+    failures += expect_message_hook(L"explorer.exe", 1, "explorer restore event hook");
+    failures += expect_message_hook(L"GoogleDriveFS.exe", 0, "google drive avoids message delete latency");
+    failures += expect_match(L"explorer.exe", L"ATL:00007FFE7B28A050", 100, 0, "audio icon is not written to ps tray factory");
+    failures += expect_match(L"explorer.exe", L"ATL:00007FF9BA0DA050", 101, 0, "microphone icon is not written to ps tray factory");
     failures += expect_match(L"explorer.exe", L"ATL:00007FFE7B28A050", 0, 0, "audio service uid must be exact");
     failures += expect_match(L"explorer.exe", L"ATL:00007FF9BA0DA050", 102, 0, "microphone uid must be exact");
     failures += expect_match(L"explorer.exe", L"Shell_TrayWnd", 100, 0, "audio service class must be atl");
     failures += expect_match(L"explorer.exe", L"SystemTray_Main", 101, 0, "microphone class must be atl");
-    failures += expect_block_uid(L"explorer.exe", L"ATL:00007FF9BA0DA050", 101, 1, "microphone privacy tray icon is blocked on create");
-    failures += expect_block_uid(L"explorer.exe", L"ATL:00007FF9BA0DA050", 100, 0, "microphone block uid must be exact");
+    failures += expect_block_uid(L"explorer.exe", L"ATL:00007FFE7B28A050", 100, 1, "audio icon uses the same creation block route");
+    failures += expect_block_uid(L"explorer.exe", L"ATL:00007FF9BA0DA050", 101, 1, "microphone tray icon uses system block route");
     failures += expect_block_uid(L"explorer.exe", L"SystemTray_Main", 101, 0, "microphone block class must be atl");
 
     failures += expect_match(L"GoogleDriveFS.exe", L"ATL:00007FF7481AE710", 11376, 0, "google drive uid is not a repeated delete rule");

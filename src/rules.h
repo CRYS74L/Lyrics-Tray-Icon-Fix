@@ -15,6 +15,9 @@ int tray_rule_should_hide_window(const wchar_t *exe_name, const wchar_t *class_n
 int tray_rule_guid_for_process(const wchar_t *exe_name, GUID *guid);
 int tray_rule_block_uid_for_window(const wchar_t *exe_name, const wchar_t *class_name, unsigned int uid);
 int tray_rule_block_uid_for_window_class(const wchar_t *exe_name, const wchar_t *class_name, unsigned int *uid);
+int tray_rule_block_uid_for_window_class_at(const wchar_t *exe_name, const wchar_t *class_name,
+                                            int index, unsigned int *uid);
+int tray_rule_block_uid_uses_message_hook(int index);
 int tray_rule_process_is_target(const wchar_t *exe_name);
 int tray_rule_process_uses_message_hook(const wchar_t *exe_name);
 int tray_rule_process_uses_shell_notify_block(const wchar_t *exe_name);
