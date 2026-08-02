@@ -116,7 +116,8 @@ static void install_iat_hook(void) {
                 if (!VirtualProtect(slot, sizeof(void *), PAGE_READWRITE, &old_protect)) {
                     return;
                 }
-                g_next_shell_notify_icon_a = (ShellNotifyIconAFn)*slot;
+                g_next_shell_notify_icon_a =
+                    *slot ? (ShellNotifyIconAFn)*slot : (ShellNotifyIconAFn)original;
                 *slot = (void *)hooked_shell_notify_icon_a;
                 VirtualProtect(slot, sizeof(void *), old_protect, &old_protect);
                 FlushInstructionCache(GetCurrentProcess(), slot, sizeof(void *));
