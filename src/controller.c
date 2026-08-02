@@ -9,11 +9,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.41"
+#define TOOL_VERSION L"v0.44"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.41.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.44.dll"
 #define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper.exe"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
@@ -437,7 +437,7 @@ static void hook_target_process_threads(DWORD pid) {
     CloseHandle(snapshot);
 }
 
-static void inject_dll_into_google_drive(DWORD pid) {
+static void inject_dll_into_process(DWORD pid) {
     wchar_t directory[MAX_PATH];
     wchar_t dll_path[MAX_PATH];
     HANDLE process;
@@ -509,7 +509,7 @@ static void hook_existing_target_processes(void) {
             add_known_target_pid(entry.th32ProcessID);
             hook_target_process_threads(entry.th32ProcessID);
             if (_wcsicmp(entry.szExeFile, L"GoogleDriveFS.exe") == 0) {
-                inject_dll_into_google_drive(entry.th32ProcessID);
+                inject_dll_into_process(entry.th32ProcessID);
             }
         } while (Process32NextW(snapshot, &entry));
     }

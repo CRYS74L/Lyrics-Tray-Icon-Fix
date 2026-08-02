@@ -29,6 +29,7 @@ typedef struct BlockDeleteState {
 static BlockDeleteState g_block_delete_states[MAX_BLOCK_DELETE_STATES];
 
 typedef BOOL (WINAPI *ShellNotifyIconWFn)(DWORD, PNOTIFYICONDATAW);
+typedef BOOL (WINAPI *ShellNotifyIconAFn)(DWORD, PNOTIFYICONDATAA);
 
 typedef struct DelayImportDescriptor {
     DWORD attributes;
@@ -42,10 +43,14 @@ typedef struct DelayImportDescriptor {
 } DelayImportDescriptor;
 
 static ShellNotifyIconWFn g_next_shell_notify_icon_w = NULL;
+static ShellNotifyIconAFn g_next_shell_notify_icon_a = NULL;
 static int g_shell_notify_iat_hooked = 0;
 static volatile LONG g_install_state = 0;
 static HANDLE g_shell_notify_ready_event = NULL;
 static void **g_patched_shell_notify_slot = NULL;
+static void **g_patched_shell_notify_slot_a = NULL;
+static HWINEVENTHOOK g_google_event_hook = NULL;
+static DWORD g_google_event_thread_id = 0;
 
 static void install_shell_notify_iat_hook(void);
 
@@ -186,6 +191,70 @@ static BOOL WINAPI hooked_shell_notify_icon_w(DWORD message, PNOTIFYICONDATAW da
         return TRUE;
     }
     return g_next_shell_notify_icon_w ? g_next_shell_notify_icon_w(message, data) : FALSE;
+}
+
+static BOOL CALLBACK google_drive_cleanup_proc(HWND hwnd, LPARAM lparam) {
+    DWORD pid = 0;
+    DWORD current_pid = (DWORD)lparam;
+    wchar_t class_name[256];
+
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != current_pid) {
+        return TRUE;
+    }
+    if (!GetClassNameW(hwnd, class_name, (int)(sizeof(class_name) / sizeof(class_name[0])))) {
+        return TRUE;
+    }
+    if (wcscmp(class_name, L"DriveDot") == 0) {
+        ShowWindow(hwnd, SW_HIDE);
+    }
+    return TRUE;
+}
+
+static DWORD WINAPI google_drive_cleanup_thread(LPVOID param) {
+    (void)param;
+    Sleep(300);
+    EnumWindows(google_drive_cleanup_proc, (LPARAM)GetCurrentProcessId());
+    return 0;
+}
+
+static void CALLBACK google_drive_event_proc(
+    HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG object_id, LONG child_id,
+    DWORD event_thread, DWORD event_time) {
+    wchar_t class_name[256];
+
+    (void)hook;
+    (void)event;
+    (void)child_id;
+    (void)event_thread;
+    (void)event_time;
+    if (object_id != OBJID_WINDOW || !hwnd) {
+        return;
+    }
+    if (GetClassNameW(hwnd, class_name, (int)(sizeof(class_name) / sizeof(class_name[0]))) &&
+        wcscmp(class_name, L"DriveDot") == 0) {
+        ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
+static DWORD WINAPI google_drive_event_thread(LPVOID param) {
+    MSG message;
+
+    (void)param;
+    g_google_event_thread_id = GetCurrentThreadId();
+    g_google_event_hook = SetWinEventHook(
+        EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, NULL, google_drive_event_proc,
+        GetCurrentProcessId(), 0, WINEVENT_OUTOFCONTEXT);
+    while (GetMessageW(&message, NULL, 0, 0) > 0) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    if (g_google_event_hook) {
+        UnhookWinEvent(g_google_event_hook);
+        g_google_event_hook = NULL;
+    }
+    g_google_event_thread_id = 0;
+    return 0;
 }
 
 static int patch_shell_notify_slot(void **function_slot, void *original, BYTE *module_base, SIZE_T module_size) {
@@ -498,6 +567,18 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
             g_process_is_target = tray_rule_process_uses_message_hook(g_process_name);
             if (tray_rule_process_uses_shell_notify_block(g_process_name)) {
                 install_shell_notify_iat_hook();
+                if (_wcsicmp(g_process_name, L"GoogleDriveFS.exe") == 0) {
+                    HANDLE thread = CreateThread(
+                        NULL, 0, google_drive_cleanup_thread, NULL, 0, NULL);
+                    if (thread) {
+                        CloseHandle(thread);
+                    }
+                    thread = CreateThread(
+                        NULL, 0, google_drive_event_thread, NULL, 0, NULL);
+                    if (thread) {
+                        CloseHandle(thread);
+                    }
+                }
             }
         }
     } else if (reason == DLL_PROCESS_DETACH && reserved == NULL) {
@@ -505,6 +586,9 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
         if (g_shell_notify_ready_event) {
             CloseHandle(g_shell_notify_ready_event);
             g_shell_notify_ready_event = NULL;
+        }
+        if (g_google_event_thread_id) {
+            PostThreadMessageW(g_google_event_thread_id, WM_QUIT, 0, 0);
         }
     }
 
