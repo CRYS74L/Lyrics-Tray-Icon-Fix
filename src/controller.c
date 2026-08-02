@@ -9,7 +9,7 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.48"
+#define TOOL_VERSION L"v0.49"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
