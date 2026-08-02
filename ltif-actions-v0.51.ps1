@@ -1,10 +1,11 @@
 ﻿param([string]$Action, [switch]$NoMessage)
 
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName PresentationCore
+Add-Type -AssemblyName WindowsBase
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$exe = Join-Path $root 'bin\Lyrics Tray Icon Fix.exe'
+$exe = Join-Path $root 'bin\Lyrics Tray Icon Fix v0.51.exe'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runName = 'Lyrics Tray Icon Fix'
 $launcher = Join-Path $root 'run-hidden.vbs'
@@ -16,31 +17,43 @@ function Show-Popup {
         return
     }
 
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = $Title
-    $form.Width = 760
-    $form.Height = 540
-    $form.StartPosition = 'CenterScreen'
-    $form.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+    $safeTitle = [System.Security.SecurityElement]::Escape($Title)
+    $safeText = [System.Security.SecurityElement]::Escape($Text)
+    [xml]$xaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="$safeTitle" Width="760" Height="540"
+        WindowStartupLocation="CenterScreen"
+        FontFamily="Microsoft YaHei UI, Segoe UI"
+        TextOptions.TextFormattingMode="Display"
+        UseLayoutRounding="True" SnapsToDevicePixels="True"
+        Background="#F5F6F8">
+  <Grid Margin="0">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+    <TextBox x:Name="Body" Grid.Row="0" Margin="16,16,16,8" Padding="12"
+             Text="$safeText" IsReadOnly="True" AcceptsReturn="True"
+             TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+             HorizontalScrollBarVisibility="Auto" BorderThickness="1"
+             BorderBrush="#D0D3D8" Background="White"
+             FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="13"
+             TextOptions.TextFormattingMode="Display"/>
+    <Button x:Name="OkButton" Grid.Row="1" Content="确定" Width="96" Height="34"
+            Margin="0,8,16,16" HorizontalAlignment="Right"
+            Background="#0078D4" Foreground="White" BorderThickness="0"
+            FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="13"/>
+  </Grid>
+</Window>
+"@
 
-    $box = New-Object System.Windows.Forms.TextBox
-    $box.Multiline = $true
-    $box.ReadOnly = $true
-    $box.ScrollBars = 'Both'
-    $box.WordWrap = $true
-    $box.Dock = 'Fill'
-    $box.Text = $Text
-
-    $button = New-Object System.Windows.Forms.Button
-    $button.Text = '确定'
-    $button.DialogResult = 'OK'
-    $button.Dock = 'Bottom'
-    $button.Height = 34
-
-    $form.Controls.Add($box)
-    $form.Controls.Add($button)
-    $form.AcceptButton = $button
-    $form.ShowDialog() | Out-Null
+    $reader = New-Object System.Xml.XmlNodeReader($xaml)
+    $window = [System.Windows.Markup.XamlReader]::Load($reader)
+    $body = $window.FindName('Body')
+    $okButton = $window.FindName('OkButton')
+    $okButton.Add_Click({ $window.Close() })
+    $window.ShowDialog() | Out-Null
 }
 
 function Start-Hidden {
