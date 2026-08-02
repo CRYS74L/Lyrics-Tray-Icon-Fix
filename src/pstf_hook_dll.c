@@ -5,6 +5,11 @@
 
 typedef BOOL (WINAPI *ShellNotifyIconAFn)(DWORD, PNOTIFYICONDATAA);
 
+static const GUID kGoogleDrivePreservedGuid = {
+    0x6BBAE539, 0x2232, 0x434A,
+    { 0xA4, 0xE5, 0x9A, 0x33, 0x56, 0x0C, 0x62, 0x83 }
+};
+
 static ShellNotifyIconAFn g_next_shell_notify_icon_a = NULL;
 static void **g_patched_slot = NULL;
 static HANDLE g_ready_event = NULL;
@@ -47,11 +52,63 @@ static int is_explorer_atl_window(HWND hwnd) {
     return match;
 }
 
+static int same_guid(const GUID *a, const GUID *b) {
+    return a && b &&
+           a->Data1 == b->Data1 &&
+           a->Data2 == b->Data2 &&
+           a->Data3 == b->Data3 &&
+           a->Data4[0] == b->Data4[0] &&
+           a->Data4[1] == b->Data4[1] &&
+           a->Data4[2] == b->Data4[2] &&
+           a->Data4[3] == b->Data4[3] &&
+           a->Data4[4] == b->Data4[4] &&
+           a->Data4[5] == b->Data4[5] &&
+           a->Data4[6] == b->Data4[6] &&
+           a->Data4[7] == b->Data4[7];
+}
+
+static int is_google_drive_atl_window(HWND hwnd) {
+    char class_name[256];
+    char process_path[MAX_PATH];
+    DWORD pid = 0;
+    DWORD size = MAX_PATH;
+    HANDLE process;
+    int match = 0;
+
+    if (!hwnd || !GetClassNameA(hwnd, class_name, (int)sizeof(class_name)) ||
+        strncmp(class_name, "ATL:", 4) != 0) {
+        return 0;
+    }
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (!pid) {
+        return 0;
+    }
+    process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) {
+        return 0;
+    }
+    if (QueryFullProcessImageNameA(process, 0, process_path, &size)) {
+        match = _stricmp(base_name(process_path), "GoogleDriveFS.exe") == 0;
+    }
+    CloseHandle(process);
+    return match;
+}
+
 static BOOL WINAPI hooked_shell_notify_icon_a(DWORD message, PNOTIFYICONDATAA data) {
-    if (data && (data->uID == 100 || data->uID == 101) &&
-        (message == NIM_ADD || message == NIM_MODIFY || message == NIM_SETVERSION) &&
-        is_explorer_atl_window(data->hWnd)) {
-        return TRUE;
+    if (data && (message == NIM_ADD || message == NIM_MODIFY || message == NIM_SETVERSION)) {
+        if (is_explorer_atl_window(data->hWnd) &&
+            (data->uID == 100 || data->uID == 101)) {
+            return TRUE;
+        }
+        if (is_google_drive_atl_window(data->hWnd)) {
+            if (data->uFlags & NIF_GUID) {
+                if (!same_guid(&data->guidItem, &kGoogleDrivePreservedGuid)) {
+                    return TRUE;
+                }
+            } else if (data->uID == 11376) {
+                return TRUE;
+            }
+        }
     }
     return g_next_shell_notify_icon_a ? g_next_shell_notify_icon_a(message, data) : FALSE;
 }
