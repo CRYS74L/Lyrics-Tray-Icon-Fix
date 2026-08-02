@@ -42,7 +42,7 @@ static const BlockUidRule kBlockUidRules[] = {
 };
 
 static const WindowRule kWindowRules[] = {
-    { NULL, NULL, NULL },
+    { L"GOOGLEDRIVEFS.EXE", L"DriveDot", NULL },
 };
 
 static int equals_ignore_case(const wchar_t *a, const wchar_t *b) {
@@ -118,15 +118,20 @@ int tray_rule_uid_for_window(const wchar_t *exe_name, const wchar_t *class_name,
 }
 
 int tray_rule_should_hide_window(const wchar_t *exe_name, const wchar_t *class_name, const wchar_t *window_text) {
-    if (!exe_name || !class_name || !window_text) {
+    if (!exe_name || !class_name) {
         return 0;
     }
 
     for (int i = 0; i < tray_window_rule_count(); ++i) {
         if (equals_ignore_case(exe_name, kWindowRules[i].exe_name) &&
-            equals_text(class_name, kWindowRules[i].class_name) &&
-            equals_text(window_text, kWindowRules[i].window_text)) {
-            return 1;
+            equals_text(class_name, kWindowRules[i].class_name)) {
+            if (!kWindowRules[i].window_text) {
+                return 1;
+            }
+            if (window_text &&
+                equals_text(window_text, kWindowRules[i].window_text)) {
+                return 1;
+            }
         }
     }
 
@@ -284,7 +289,7 @@ unsigned int tray_rule_uid(int index) {
 }
 
 int tray_window_rule_count(void) {
-    return 0;
+    return (int)(sizeof(kWindowRules) / sizeof(kWindowRules[0]));
 }
 
 const wchar_t *tray_window_rule_exe(int index) {
@@ -305,7 +310,7 @@ const wchar_t *tray_window_rule_text(int index) {
     if (index < 0 || index >= tray_window_rule_count()) {
         return L"";
     }
-    return kWindowRules[index].window_text;
+    return kWindowRules[index].window_text ? kWindowRules[index].window_text : L"any";
 }
 
 int tray_guid_rule_count(void) {

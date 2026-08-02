@@ -1,6 +1,7 @@
 ﻿#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -8,11 +9,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.37-shell-recovery"
+#define TOOL_VERSION L"v0.39"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.37-cold-recovery.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.39.dll"
 #define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper.exe"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
@@ -31,6 +32,26 @@ typedef struct CurrentScanContext {
     int hidden_windows;
     int hidden_guid_icons;
 } CurrentScanContext;
+
+#define MAX_TARGET_THREAD_HOOKS 512
+#define MAX_KNOWN_TARGET_PIDS 64
+typedef struct ThreadHook {
+    DWORD pid;
+    DWORD thread_id;
+    HHOOK call_hook;
+    HHOOK msg_hook;
+    HANDLE process;
+    HANDLE thread;
+} ThreadHook;
+
+static HMODULE g_hook_dll = NULL;
+static HOOKPROC g_call_proc = NULL;
+static HOOKPROC g_msg_proc = NULL;
+static HWINEVENTHOOK g_target_win_event_hook = NULL;
+static ThreadHook g_target_thread_hooks[MAX_TARGET_THREAD_HOOKS];
+static int g_target_thread_hook_count = 0;
+static DWORD g_known_target_pids[MAX_KNOWN_TARGET_PIDS];
+static int g_known_target_pid_count = 0;
 
 static void write_utf8(HANDLE handle, const wchar_t *format, ...) {
     wchar_t wide[2048];
@@ -141,27 +162,94 @@ static int get_process_base_name(DWORD pid, wchar_t *buffer, DWORD count) {
 }
 
 static HANDLE open_shell_process(DWORD *pid_out) {
-    HWND taskbar = FindWindowW(L"Shell_TrayWnd", NULL);
-    wchar_t process_name[MAX_PATH];
-    DWORD pid = 0;
-    HANDLE process;
+    HANDLE snapshot;
+    PROCESSENTRY32W entry;
+    DWORD current_session = 0;
 
     if (pid_out) {
         *pid_out = 0;
     }
-    if (!taskbar) {
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &current_session)) {
         return NULL;
     }
-    GetWindowThreadProcessId(taskbar, &pid);
-    if (!pid || !get_process_base_name(pid, process_name, MAX_PATH) ||
-        _wcsicmp(process_name, L"explorer.exe") != 0) {
+    snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
         return NULL;
     }
-    process = OpenProcess(SYNCHRONIZE, FALSE, pid);
-    if (process && pid_out) {
-        *pid_out = pid;
+    ZeroMemory(&entry, sizeof(entry));
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            DWORD candidate_session = 0;
+            HANDLE process;
+            if (_wcsicmp(entry.szExeFile, L"explorer.exe") != 0 ||
+                !ProcessIdToSessionId(entry.th32ProcessID, &candidate_session) ||
+                candidate_session != current_session) {
+                continue;
+            }
+            process = OpenProcess(SYNCHRONIZE, FALSE, entry.th32ProcessID);
+            if (process) {
+                if (pid_out) {
+                    *pid_out = entry.th32ProcessID;
+                }
+                CloseHandle(snapshot);
+                return process;
+            }
+        } while (Process32NextW(snapshot, &entry));
     }
-    return process;
+    CloseHandle(snapshot);
+    return NULL;
+}
+
+static void nudge_process_threads(DWORD pid) {
+    HANDLE snapshot;
+    THREADENTRY32 entry;
+
+    if (!pid) {
+        return;
+    }
+    snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    ZeroMemory(&entry, sizeof(entry));
+    entry.dwSize = sizeof(entry);
+    if (Thread32First(snapshot, &entry)) {
+        do {
+            if (entry.th32OwnerProcessID == pid) {
+                PostThreadMessageW(entry.th32ThreadID, WM_NULL, 0, 0);
+            }
+        } while (Thread32Next(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+}
+
+static void nudge_hook_target_threads(void) {
+    HANDLE snapshot;
+    PROCESSENTRY32W entry;
+    DWORD current_session = 0;
+
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &current_session)) {
+        return;
+    }
+    snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    ZeroMemory(&entry, sizeof(entry));
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            DWORD candidate_session = 0;
+            if (!tray_rule_process_is_target(entry.szExeFile) ||
+                !ProcessIdToSessionId(entry.th32ProcessID, &candidate_session) ||
+                candidate_session != current_session) {
+                continue;
+            }
+            nudge_process_threads(entry.th32ProcessID);
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
 }
 
 static int launch_self_command(const wchar_t *arguments) {
@@ -190,6 +278,242 @@ static int launch_self_command(const wchar_t *arguments) {
     return 1;
 }
 
+static int pid_is_target_process(DWORD pid) {
+    wchar_t name[MAX_PATH];
+    if (!get_process_base_name(pid, name, MAX_PATH)) {
+        return 0;
+    }
+    return tray_rule_process_is_target(name);
+}
+
+static int known_target_pid(DWORD pid) {
+    for (int i = 0; i < g_known_target_pid_count; ++i) {
+        if (g_known_target_pids[i] == pid) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void add_known_target_pid(DWORD pid) {
+    if (known_target_pid(pid) || g_known_target_pid_count >= MAX_KNOWN_TARGET_PIDS) {
+        return;
+    }
+    g_known_target_pids[g_known_target_pid_count++] = pid;
+}
+
+static void remove_target_hook_at(int index) {
+    if (index < 0 || index >= g_target_thread_hook_count) {
+        return;
+    }
+    if (g_target_thread_hooks[index].call_hook) {
+        UnhookWindowsHookEx(g_target_thread_hooks[index].call_hook);
+    }
+    if (g_target_thread_hooks[index].msg_hook) {
+        UnhookWindowsHookEx(g_target_thread_hooks[index].msg_hook);
+    }
+    if (g_target_thread_hooks[index].thread) {
+        CloseHandle(g_target_thread_hooks[index].thread);
+    }
+    if (g_target_thread_hooks[index].process) {
+        CloseHandle(g_target_thread_hooks[index].process);
+    }
+    --g_target_thread_hook_count;
+    if (index != g_target_thread_hook_count) {
+        g_target_thread_hooks[index] = g_target_thread_hooks[g_target_thread_hook_count];
+    }
+    ZeroMemory(&g_target_thread_hooks[g_target_thread_hook_count], sizeof(ThreadHook));
+}
+
+static void remove_finished_target_hooks(void) {
+    for (int i = g_target_thread_hook_count - 1; i >= 0; --i) {
+        DWORD process_wait = g_target_thread_hooks[i].process
+            ? WaitForSingleObject(g_target_thread_hooks[i].process, 0)
+            : WAIT_OBJECT_0;
+        DWORD thread_wait = g_target_thread_hooks[i].thread
+            ? WaitForSingleObject(g_target_thread_hooks[i].thread, 0)
+            : WAIT_OBJECT_0;
+        if (process_wait == WAIT_OBJECT_0 || thread_wait == WAIT_OBJECT_0) {
+            remove_target_hook_at(i);
+        }
+    }
+}
+
+static void remove_all_target_hooks(void) {
+    while (g_target_thread_hook_count > 0) {
+        remove_target_hook_at(g_target_thread_hook_count - 1);
+    }
+}
+
+static int find_target_thread_hook(DWORD pid, DWORD thread_id) {
+    for (int i = 0; i < g_target_thread_hook_count; ++i) {
+        if (g_target_thread_hooks[i].pid == pid &&
+            g_target_thread_hooks[i].thread_id == thread_id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int process_has_target_hook(DWORD pid) {
+    for (int i = 0; i < g_target_thread_hook_count; ++i) {
+        if (g_target_thread_hooks[i].pid == pid) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int thread_has_message_queue(DWORD thread_id) {
+    GUITHREADINFO info;
+    ZeroMemory(&info, sizeof(info));
+    info.cbSize = sizeof(info);
+    return GetGUIThreadInfo(thread_id, &info) != FALSE;
+}
+
+static void hook_target_thread(DWORD pid, DWORD thread_id) {
+    HHOOK call_hook;
+    HHOOK msg_hook;
+    HANDLE process;
+    HANDLE thread;
+
+    if (!pid || !thread_id || !g_hook_dll || !g_call_proc || !g_msg_proc ||
+        find_target_thread_hook(pid, thread_id)) {
+        return;
+    }
+    remove_finished_target_hooks();
+    if (g_target_thread_hook_count >= MAX_TARGET_THREAD_HOOKS) {
+        return;
+    }
+
+    call_hook = SetWindowsHookExW(WH_CALLWNDPROC, g_call_proc, g_hook_dll, thread_id);
+    msg_hook = SetWindowsHookExW(WH_GETMESSAGE, g_msg_proc, g_hook_dll, thread_id);
+    if (!call_hook && !msg_hook) {
+        return;
+    }
+    process = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    thread = OpenThread(SYNCHRONIZE, FALSE, thread_id);
+    if (!process || !thread) {
+        if (call_hook) UnhookWindowsHookEx(call_hook);
+        if (msg_hook) UnhookWindowsHookEx(msg_hook);
+        if (thread) CloseHandle(thread);
+        if (process) CloseHandle(process);
+        return;
+    }
+
+    g_target_thread_hooks[g_target_thread_hook_count].pid = pid;
+    g_target_thread_hooks[g_target_thread_hook_count].thread_id = thread_id;
+    g_target_thread_hooks[g_target_thread_hook_count].call_hook = call_hook;
+    g_target_thread_hooks[g_target_thread_hook_count].msg_hook = msg_hook;
+    g_target_thread_hooks[g_target_thread_hook_count].process = process;
+    g_target_thread_hooks[g_target_thread_hook_count].thread = thread;
+    ++g_target_thread_hook_count;
+    PostThreadMessageW(thread_id, WM_NULL, 0, 0);
+}
+
+static void hook_target_process_threads(DWORD pid) {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    THREADENTRY32 entry;
+    wchar_t process_name[MAX_PATH];
+    int shell_block = 0;
+
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    if (!get_process_base_name(pid, process_name, MAX_PATH)) {
+        CloseHandle(snapshot);
+        return;
+    }
+    shell_block = tray_rule_process_uses_shell_notify_block(process_name);
+    if (shell_block && process_has_target_hook(pid)) {
+        CloseHandle(snapshot);
+        return;
+    }
+    ZeroMemory(&entry, sizeof(entry));
+    entry.dwSize = sizeof(entry);
+    if (Thread32First(snapshot, &entry)) {
+        do {
+            if (entry.th32OwnerProcessID == pid) {
+                if (shell_block && !thread_has_message_queue(entry.th32ThreadID)) {
+                    continue;
+                }
+                hook_target_thread(pid, entry.th32ThreadID);
+                if (shell_block && process_has_target_hook(pid)) {
+                    break;
+                }
+            }
+        } while (Thread32Next(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+}
+
+static void hook_existing_target_processes(void) {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    PROCESSENTRY32W entry;
+    DWORD current_session = 0;
+
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &current_session)) {
+        CloseHandle(snapshot);
+        return;
+    }
+    ZeroMemory(&entry, sizeof(entry));
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            DWORD candidate_session = 0;
+            if (!tray_rule_process_is_target(entry.szExeFile) ||
+                !ProcessIdToSessionId(entry.th32ProcessID, &candidate_session) ||
+                candidate_session != current_session) {
+                continue;
+            }
+            add_known_target_pid(entry.th32ProcessID);
+            hook_target_process_threads(entry.th32ProcessID);
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+}
+
+static void hook_target_window(HWND hwnd) {
+    DWORD pid = 0;
+    DWORD thread_id;
+
+    if (!hwnd) {
+        return;
+    }
+    thread_id = GetWindowThreadProcessId(hwnd, &pid);
+    if (find_target_thread_hook(pid, thread_id)) {
+        return;
+    }
+    if (known_target_pid(pid) || pid_is_target_process(pid)) {
+        add_known_target_pid(pid);
+        hook_target_process_threads(pid);
+    }
+}
+
+static void CALLBACK target_win_event_proc(
+    HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG object_id, LONG child_id,
+    DWORD event_thread, DWORD event_time) {
+    (void)hook;
+    (void)event;
+    (void)child_id;
+    (void)event_thread;
+    (void)event_time;
+    if (object_id == OBJID_WINDOW && hwnd) {
+        hook_target_window(hwnd);
+    }
+}
+
+static int install_target_thread_hooks(void) {
+    g_target_win_event_hook = SetWinEventHook(
+        EVENT_OBJECT_CREATE, EVENT_OBJECT_CREATE, NULL, target_win_event_proc,
+        0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    hook_existing_target_processes();
+    return 1;
+}
+
 static int command_recover(DWORD old_explorer_pid) {
     for (int i = 0; i < 500; ++i) {
         DWORD new_pid = 0;
@@ -203,6 +527,24 @@ static int command_recover(DWORD old_explorer_pid) {
         Sleep(20);
     }
     return 1;
+}
+
+static HANDLE wait_for_new_shell_process(DWORD old_explorer_pid, DWORD *pid_out) {
+    for (int i = 0; i < 500; ++i) {
+        DWORD new_pid = 0;
+        HANDLE process = open_shell_process(&new_pid);
+        if (process) {
+            if (new_pid && new_pid != old_explorer_pid) {
+                if (pid_out) {
+                    *pid_out = new_pid;
+                }
+                return process;
+            }
+            CloseHandle(process);
+        }
+        Sleep(20);
+    }
+    return NULL;
 }
 
 static void write_dword_value(HKEY key, const wchar_t *name, DWORD value) {
@@ -680,22 +1022,10 @@ static int command_start(void) {
         return 1;
     }
 
-    HHOOK call_hook = SetWindowsHookExW(WH_CALLWNDPROC, call_proc, dll, 0);
-    HHOOK msg_hook = SetWindowsHookExW(WH_GETMESSAGE, msg_proc, dll, 0);
-    if (!call_hook || !msg_hook) {
-        err(L"Cannot install message hooks: %lu\n", GetLastError());
-        if (call_hook) UnhookWindowsHookEx(call_hook);
-        if (msg_hook) UnhookWindowsHookEx(msg_hook);
-        FreeLibrary(dll);
-        SetEvent(stop_event);
-        wait_and_close_helper(pstf_helper);
-        WaitForSingleObject(sync_thread, 3000);
-        CloseHandle(sync_thread);
-        CloseHandle(sync_event);
-        CloseHandle(stop_event);
-        CloseHandle(mutex);
-        return 1;
-    }
+    g_hook_dll = dll;
+    g_call_proc = call_proc;
+    g_msg_proc = msg_proc;
+    install_target_thread_hooks();
 
     HANDLE explorer_process = open_shell_process(&explorer_pid);
     HANDLE explorer_watch_ready = CreateEventW(
@@ -703,7 +1033,6 @@ static int command_start(void) {
     if (!explorer_watch_ready) {
         err(L"Cannot create Explorer watcher status event: %lu\n", GetLastError());
     }
-
     out(L"%ls started\n", TOOL_VERSION);
     for (;;) {
         DWORD wait;
@@ -722,8 +1051,27 @@ static int command_start(void) {
             break;
         }
         if (explorer_process && wait == WAIT_OBJECT_0 + 1) {
-            restart_after_shell = 1;
-            break;
+            DWORD old_explorer_pid = explorer_pid;
+            CloseHandle(explorer_process);
+            explorer_process = NULL;
+            explorer_pid = 0;
+            if (explorer_watch_ready) {
+                ResetEvent(explorer_watch_ready);
+            }
+
+            explorer_process = wait_for_new_shell_process(old_explorer_pid, &explorer_pid);
+            if (!explorer_process) {
+                restart_after_shell = 1;
+                explorer_pid = old_explorer_pid;
+                break;
+            }
+
+            if (explorer_watch_ready) {
+                SetEvent(explorer_watch_ready);
+            }
+            hook_target_process_threads(explorer_pid);
+            hook_existing_target_processes();
+            continue;
         }
         if (wait == WAIT_OBJECT_0 + handle_count) {
             while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -737,8 +1085,14 @@ static int command_start(void) {
     }
 
     SetEvent(stop_event);
-    UnhookWindowsHookEx(call_hook);
-    UnhookWindowsHookEx(msg_hook);
+    if (g_target_win_event_hook) {
+        UnhookWinEvent(g_target_win_event_hook);
+        g_target_win_event_hook = NULL;
+    }
+    remove_all_target_hooks();
+    g_hook_dll = NULL;
+    g_call_proc = NULL;
+    g_msg_proc = NULL;
     FreeLibrary(dll);
     if (explorer_watch_ready) CloseHandle(explorer_watch_ready);
     if (explorer_process) CloseHandle(explorer_process);

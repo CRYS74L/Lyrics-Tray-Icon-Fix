@@ -2,7 +2,7 @@
 
 这是一个为个人用途编写的 Windows 托盘图标修复工具，用来隐藏 BetterLyrics、Lyricify Lite、Windows 音频、Windows 麦克风隐私指示器以及 Google Drive 相关托盘中错误或不需要显示的特定图标。
 
-当前版本：`v0.37-shell-recovery`。
+当前版本：`v0.39`。
 
 ## 用途
 
@@ -16,35 +16,42 @@ BETTERLYRICS.WINUI3.EXE + H.NotifyIcon_* + UID=0
 EXPLORER.EXE + ATL:* + UID=100
 EXPLORER.EXE + ATL:* + UID=101
 GOOGLEDRIVEFS.EXE + ATL:* + UID=11376
+GOOGLEDRIVEFS.EXE + DriveDot
 ```
 
 其中 `EXPLORER.EXE + ATL:* + UID=100` 用于处理已观察到的 Windows 音频托盘图标，例如“音频服务未运行。”和“音箱 (USB): 26%”。
 
 `EXPLORER.EXE + ATL:* + UID=100/101` 分别处理已观察到的 Windows 音频图标和麦克风隐私指示器，例如“音频服务未运行。”与“微信 正在使用你的麦克风”。两者现在使用相同的创建阶段拦截和当前图标清理路径，不再向 PS Tray Factory 的隐藏列表写入音频规则。所有匹配同时限定所有者进程、窗口类前缀和 UID，避免影响 `explorer.exe` 的其他托盘图标。
 
-Google Drive 当前有两个不同的通知图标。v0.37 沿用 v0.28 的处理方式：隐藏 `GOOGLEDRIVEFS.EXE + ATL:* + UID=11376` 这个图标，并保留 `IconGuid={6BBAE539-2232-434A-A4E5-9A33560C6283}` 的 Google Drive 图标。
+Google Drive 当前有两个不同的通知图标。v0.39 隐藏 `GOOGLEDRIVEFS.EXE + ATL:* + UID=11376` 以及 `GOOGLEDRIVEFS.EXE + DriveDot` 中不需要的图标窗口，并保留 `IconGuid={6BBAE539-2232-434A-A4E5-9A33560C6283}` 的主 Google Drive 图标。
 
 ## 使用
 
-普通使用请从 GitHub Releases 下载完整包，解压到固定目录后运行：
+普通使用请从 GitHub Releases 下载完整包，解压到固定目录后双击：
 
 ```text
-Install and start v0.37.cmd
+1 - 启动并设置开机自启.cmd
 ```
 
-查看状态：
+停止当前服务：
 
 ```text
-Status v0.37.cmd
+2 - 停止当前服务.cmd
 ```
 
-停止并移除开机启动：
+停止并取消开机自启：
 
 ```text
-Stop and disable v0.37.cmd
+3 - 停止并取消开机自启.cmd
 ```
 
-开机启动项使用当前用户的：
+检测状态：
+
+```text
+4 - 检测状态与自启状态.cmd
+```
+
+开机启动项只使用当前用户的：
 
 ```text
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run
@@ -58,24 +65,24 @@ HKCU Run -> wscript.exe -> run-hidden.vbs -> bin\Lyrics Tray Icon Fix.exe start
 
 ## 实现方式
 
-v0.37 仍使用 Windows 消息 Hook：
+v0.39 仍使用 Windows 消息 Hook，但只在目标进程的 GUI 线程上安装：
 
 ```text
 WH_CALLWNDPROC
 WH_GETMESSAGE
 ```
 
-它不是持续轮询托盘，也不主动广播 PS Tray Factory 的刷新消息。后台进程主要等待事件，Hook DLL 只对命中的目标进程和目标图标规则执行处理。
+它不是持续轮询托盘，也不主动广播 PS Tray Factory 的刷新消息。后台进程主要等待事件，Hook DLL 只对命中的目标进程和目标图标规则执行处理。Explorer 和 Google Drive 的 Hook 就绪后会立即返回，不再逐条检查普通窗口消息，因此不会拖慢桌面框选或右键菜单。
 
-对 Google Drive 以及 Explorer 的 UID 100/101，v0.37 使用创建阶段拦截，并在服务启动时做一次当前图标清理。Explorer 的图标由 `stobject.dll` 的延迟导入提交，因此工具按 PE 延迟导入名称精确修改该模块的 `Shell_NotifyIconW` 槽；UID 100/101 另有基于 Explorer 既有消息事件的兜底删除，不使用定时器。Google Drive 仍修改自身主模块的普通导入槽，且不进入消息删除路径，避免影响右键菜单响应。若目标槽已由其他组件接管，本工具会保存现有函数作为下一跳，未命中隐藏规则的调用仍交回原有函数，以保留无关图标行为。
+对 Google Drive 以及 Explorer 的 UID 100/101，v0.39 使用创建阶段拦截。Explorer 的图标由 `stobject.dll` 的延迟导入提交，因此工具按 PE 延迟导入名称精确修改该模块的 `Shell_NotifyIconW` 槽；UID 100/101 另有基于 Explorer 既有消息事件的兜底删除，不使用定时器。Google Drive 仍修改自身主模块的普通导入槽，DriveDot 窗口按窗口类直接隐藏，避免影响右键菜单响应。若目标槽已由其他组件接管，本工具会保存现有函数作为下一跳，未命中隐藏规则的调用仍交回原有函数，以保留无关图标行为。
 
-v0.37 直接把当前 `explorer.exe` 的进程句柄加入后台无限事件等待。Explorer 退出时，控制器先正常卸载现有 Hook，再启动同一程序的短时 recovery 模式；recovery 最多在 10 秒 Shell 重建窗口内等待新的 `Shell_TrayWnd`，随后通过完整冷启动重新建立已验证的 Hook 链路。平时没有轮询，短时检测只会由 Explorer 进程退出事件触发。`status` 中的 `Explorer restart watcher` 可确认进程句柄等待已经建立。
+v0.39 直接把当前会话的 `explorer.exe` 进程句柄加入后台无限事件等待。Explorer 退出时，控制器保持目标进程 Hook 持续运行，只在最长 10 秒的 Shell 重建窗口内通过进程快照取得新的 Explorer PID 并替换等待句柄，不依赖 Win11 重建后可能不存在的 `Shell_TrayWnd`。只有 10 秒内始终找不到新 Explorer 时，才退回完整冷启动恢复路径。平时没有轮询，短时检测只会由 Explorer 进程退出事件触发。`status` 中的 `Explorer restart watcher` 可确认当前 Explorer 进程句柄等待已经建立。
 
-PS Tray Factory 3.0.3.198 会从缓存的 `NOTIFYICONDATA` 调用 32 位 `Shell_NotifyIconA`，重新恢复已经被删除的 Explorer 音频图标。v0.37 由独立的 32 位辅助进程只对属于 `PSTrayFactory.exe` 且具有消息队列的线程安装线程级 `WH_CALLWNDPROC` Hook，并只修改该进程主模块的 `Shell_NotifyIconA` 导入槽。它只拦截所有者为 `explorer.exe`、窗口类为 `ATL:*`、UID 为 100 或 101 的 `NIM_ADD`、`NIM_MODIFY` 与 `NIM_SETVERSION`；其他 PS Tray Factory 调用全部原样转发。辅助器在安装线程 Hook 后只向 PS Tray Factory 自己的窗口投递一次 `WM_NULL`，使 IAT 防恢复 Hook 每次启动都立即就绪。PS Tray Factory 重启时仍通过 `SetWinEventHook` 的窗口事件重新安装，不使用定时轮询。
+PS Tray Factory 3.0.3.198 会从缓存的 `NOTIFYICONDATA` 调用 32 位 `Shell_NotifyIconA`，重新恢复已经被删除的 Explorer 音频图标。v0.39 由独立的 32 位辅助进程只对属于 `PSTrayFactory.exe` 且具有消息队列的线程安装线程级 `WH_CALLWNDPROC` Hook，并只修改该进程主模块的 `Shell_NotifyIconA` 导入槽。它只拦截所有者为 `explorer.exe`、窗口类为 `ATL:*`、UID 为 100 或 101 的 `NIM_ADD`、`NIM_MODIFY` 与 `NIM_SETVERSION`；其他 PS Tray Factory 调用全部原样转发。辅助器在安装线程 Hook 后只向 PS Tray Factory 自己的窗口投递一次 `WM_NULL`，使 IAT 防恢复 Hook 每次启动都立即就绪。PS Tray Factory 重启时由进程退出事件触发重新安装，不使用定时轮询，也不监听全部窗口事件。
 
 `status` 中的 `Create-stage hook` 和 `PS Tray Factory restore guard` 只有在对应目标模块的导入槽实际改写成功后才显示 `ready`，可用于区分“后台进程存在”和“创建阶段拦截已生效”。
 
-服务停止或 Hook DLL 正常卸载时，会把修改过的导入槽恢复为安装前保存的下一跳，避免后续升级堆叠旧 Hook。v0.37 每个目标模块只改写一个实际命中的 `Shell_NotifyIconW` 导入槽，并用原子安装状态阻止并发重复改写。
+服务停止或 Hook DLL 正常卸载时，会把修改过的导入槽恢复为安装前保存的下一跳，避免后续升级堆叠旧 Hook。v0.39 每个目标模块只改写一个实际命中的 `Shell_NotifyIconW` 导入槽，并用原子安装状态阻止并发重复改写。若 Explorer 或 Google Drive 冷启动时目标模块尚未加载，Hook DLL会在后续真实窗口消息到来时重新检查；从未就绪变为就绪的瞬间重新执行创建阶段拦截，不使用定时器。
 
 ## 构建
 
@@ -101,7 +108,7 @@ bin\
 
 ## 安全说明
 
-本工具不读取游戏内存，不扫描游戏进程内存，不注入游戏专用逻辑。它会安装全局 Windows 消息 Hook，因此 Hook DLL 会被加载到多个 GUI 进程中，这是该技术路线的正常表现。
+本工具不读取游戏内存，不扫描游戏进程内存，不注入游戏专用逻辑。它只对命中规则的少数进程安装线程级 Hook，不安装全局 Windows 消息 Hook。
 
 如果特别在意游戏反作弊风险，请在启动相关游戏前自行评估是否停用本工具。
 

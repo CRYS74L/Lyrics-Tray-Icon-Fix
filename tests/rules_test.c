@@ -75,7 +75,7 @@ int main(void) {
     failures += expect_match(L"Other.exe", L"H.NotifyIcon_66a3fb03-7068-42a1-b1c9-861baae756c0", 0, 0, "exe prevents cross-app hiding");
 
     failures += expect_message_hook(L"explorer.exe", 1, "explorer restore event hook");
-    failures += expect_message_hook(L"GoogleDriveFS.exe", 0, "google drive avoids message delete latency");
+    failures += expect_message_hook(L"GoogleDriveFS.exe", 1, "google drive hooks drive dot windows");
     failures += expect_match(L"explorer.exe", L"ATL:00007FFE7B28A050", 100, 0, "audio icon is not written to ps tray factory");
     failures += expect_match(L"explorer.exe", L"ATL:00007FF9BA0DA050", 101, 0, "microphone icon is not written to ps tray factory");
     failures += expect_match(L"explorer.exe", L"ATL:00007FFE7B28A050", 0, 0, "audio service uid must be exact");
@@ -91,7 +91,8 @@ int main(void) {
     failures += expect_block_uid(L"GoogleDriveFS.exe", L"ATL:00007FF7481AE710", 0, 0, "google drive block uid must be exact");
     failures += expect_block_uid(L"GoogleDriveFS.exe", L"Windows.UI.Core.CoreWindow", 11376, 0, "google drive block class must be atl");
 
-    failures += expect_hide_window(L"GoogleDriveFS.exe", L"DriveDot", L"Google Drive live edit status", 0, "google drive live edit dot is not hidden");
+    failures += expect_hide_window(L"GoogleDriveFS.exe", L"DriveDot", L"Google Drive live edit status", 1, "google drive live edit dot is hidden by class");
+    failures += expect_hide_window(L"GoogleDriveFS.exe", L"DriveDot", L"", 1, "google drive drive dot hides without text");
     failures += expect_hide_window(L"GoogleDriveFS.exe", L"ATL:00007FF7481AE710", L"", 0, "google drive normal atl window is not hidden");
     failures += expect_hide_window(L"Other.exe", L"DriveDot", L"Google Drive live edit status", 0, "drive dot rule requires exe");
     failures += expect_guid(L"GoogleDriveFS.exe", 0, "google drive guid icon is kept");

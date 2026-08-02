@@ -166,48 +166,13 @@ static int should_block_uid_notify(DWORD message, const NOTIFYICONDATAW *data) {
     return tray_rule_block_uid_for_window(g_process_name, class_name, data->uID);
 }
 
-static BOOL CALLBACK delete_current_block_uid_icon_proc(HWND hwnd, LPARAM lparam) {
-    DWORD pid = 0;
-    DWORD current_pid = (DWORD)lparam;
-    wchar_t class_name[256];
-    unsigned int uid = 0;
-    NOTIFYICONDATAW data;
-
-    GetWindowThreadProcessId(hwnd, &pid);
-    if (pid != current_pid) {
-        return TRUE;
-    }
-
-    if (!GetClassNameW(hwnd, class_name, (int)(sizeof(class_name) / sizeof(class_name[0])))) {
-        return TRUE;
-    }
-
-    for (int i = 0; i < tray_block_uid_rule_count(); ++i) {
-        if (!tray_rule_block_uid_for_window_class_at(g_process_name, class_name, i, &uid)) {
-            continue;
-        }
-        ZeroMemory(&data, sizeof(data));
-        data.cbSize = sizeof(data);
-        data.hWnd = hwnd;
-        data.uID = uid;
-        Shell_NotifyIconW(NIM_DELETE, &data);
-    }
-    return TRUE;
-}
-
-static DWORD WINAPI delete_current_block_uid_icons_thread(LPVOID param) {
-    (void)param;
-    Sleep(200);
-    install_shell_notify_iat_hook();
-    EnumWindows(delete_current_block_uid_icon_proc, (LPARAM)GetCurrentProcessId());
-    return 0;
-}
-
 static BOOL WINAPI hooked_shell_notify_icon_w(DWORD message, PNOTIFYICONDATAW data) {
-    if (should_block_uid_notify(message, data)) {
+    int block_uid = should_block_uid_notify(message, data);
+    int block_guid = should_block_guid_notify(message, data);
+    if (block_uid) {
         return TRUE;
     }
-    if (should_block_guid_notify(message, data)) {
+    if (block_guid) {
         return TRUE;
     }
     return g_next_shell_notify_icon_w ? g_next_shell_notify_icon_w(message, data) : FALSE;
@@ -384,6 +349,15 @@ static void inspect_window(HWND hwnd) {
     unsigned int uid = 0;
     GUID guid;
 
+    int uses_shell_block = tray_rule_process_uses_shell_notify_block(g_process_name);
+    if (uses_shell_block && !g_shell_notify_iat_hooked) {
+        install_shell_notify_iat_hook();
+        return;
+    }
+    if (uses_shell_block && !tray_rule_process_uses_message_hook(g_process_name)) {
+        return;
+    }
+
     if (!g_process_is_target || !hwnd) {
         return;
     }
@@ -491,7 +465,6 @@ __declspec(dllexport) LRESULT CALLBACK GetMsgHookProc(int code, WPARAM wparam, L
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         wchar_t module_path[MAX_PATH];
-        GUID guid;
         DisableThreadLibraryCalls(instance);
 
         if (GetModuleFileNameW(instance, module_path, MAX_PATH)) {
@@ -514,11 +487,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
             g_process_name[MAX_PATH - 1] = L'\0';
             g_process_is_target = tray_rule_process_uses_message_hook(g_process_name);
             if (tray_rule_process_uses_shell_notify_block(g_process_name)) {
-                HANDLE thread;
-                thread = CreateThread(NULL, 0, delete_current_block_uid_icons_thread, NULL, 0, NULL);
-                if (thread) {
-                    CloseHandle(thread);
-                }
+                install_shell_notify_iat_hook();
             }
         }
     } else if (reason == DLL_PROCESS_DETACH && reserved == NULL) {
