@@ -36,8 +36,8 @@ static const GuidRule kGuidRules[] = {
 };
 
 static const BlockUidRule kBlockUidRules[] = {
-    { L"EXPLORER.EXE", L"ATL:", 100, 1 },
-    { L"EXPLORER.EXE", L"ATL:", 101, 1 },
+    { L"EXPLORER.EXE", L"ATL:", 100, 0 },
+    { L"EXPLORER.EXE", L"ATL:", 101, 0 },
     { L"GOOGLEDRIVEFS.EXE", L"ATL:", 11376, 0 },
 };
 
@@ -261,6 +261,14 @@ int tray_rule_process_uses_shell_notify_block(const wchar_t *exe_name) {
     }
 
     return 0;
+}
+
+int tray_rule_should_write_ps_tray_factory(const wchar_t *exe_name) {
+    if (!exe_name) {
+        return 0;
+    }
+    return _wcsicmp(exe_name, L"Lyricify Lite.exe") != 0 &&
+           _wcsicmp(exe_name, L"BetterLyrics.WinUI3.exe") != 0;
 }
 
 int tray_rule_count(void) {

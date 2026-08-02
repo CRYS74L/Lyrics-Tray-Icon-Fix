@@ -51,9 +51,22 @@ static void **g_patched_shell_notify_slot = NULL;
 static void **g_patched_shell_notify_slot_a = NULL;
 static HWINEVENTHOOK g_google_event_hook = NULL;
 static DWORD g_google_event_thread_id = 0;
+static HANDLE g_google_event_thread_handle = NULL;
+static HANDLE g_google_cleanup_thread_handle = NULL;
+static HWINEVENTHOOK g_message_event_hook = NULL;
+static DWORD g_message_event_thread_id = 0;
+static HANDLE g_message_event_thread_handle = NULL;
+
+#define LYRICIFY_CLEANUP_MS 10000
+#define LYRICIFY_CLEANUP_INTERVAL_MS 200
+static HWND g_lyricify_cleanup_hwnd = NULL;
+static volatile LONG g_lyricify_cleanup_started = 0;
+static HANDLE g_lyricify_cleanup_stop_event = NULL;
+static HANDLE g_lyricify_cleanup_thread = NULL;
 
 static void install_shell_notify_iat_hook(void);
 static void install_shell_notify_iat_hook_a(void);
+static void inspect_window(HWND hwnd);
 
 static const wchar_t *base_name(const wchar_t *path) {
     const wchar_t *name = path;
@@ -92,6 +105,9 @@ static void queue_rule(const wchar_t *class_name, unsigned int uid) {
     DWORD written = 0;
 
     if (!g_queue_path[0] || !class_name || !class_name[0]) {
+        return;
+    }
+    if (!tray_rule_should_write_ps_tray_factory(g_process_name)) {
         return;
     }
 
@@ -310,6 +326,104 @@ static DWORD WINAPI google_drive_event_thread(LPVOID param) {
     return 0;
 }
 
+static void CALLBACK message_window_event_proc(
+    HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG object_id, LONG child_id,
+    DWORD event_thread, DWORD event_time) {
+    (void)hook;
+    (void)event;
+    (void)child_id;
+    (void)event_thread;
+    (void)event_time;
+    if (object_id == OBJID_WINDOW && hwnd) {
+        inspect_window(hwnd);
+    }
+}
+
+static DWORD WINAPI message_window_event_thread(LPVOID param) {
+    MSG message;
+
+    (void)param;
+    g_message_event_thread_id = GetCurrentThreadId();
+    g_message_event_hook = SetWinEventHook(
+        EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, NULL, message_window_event_proc,
+        GetCurrentProcessId(), 0, WINEVENT_OUTOFCONTEXT);
+    while (GetMessageW(&message, NULL, 0, 0) > 0) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    if (g_message_event_hook) {
+        UnhookWinEvent(g_message_event_hook);
+        g_message_event_hook = NULL;
+    }
+    g_message_event_thread_id = 0;
+    return 0;
+}
+
+static int hnotify_icon_class(const wchar_t *class_name) {
+    return class_name && wcsncmp(class_name, L"H.NotifyIcon_", 13) == 0;
+}
+
+static int uid_icon_exists(HWND hwnd, unsigned int uid) {
+    NOTIFYICONIDENTIFIER identifier;
+    RECT rect;
+
+    ZeroMemory(&identifier, sizeof(identifier));
+    identifier.cbSize = sizeof(identifier);
+    identifier.hWnd = hwnd;
+    identifier.uID = uid;
+    return Shell_NotifyIconGetRect(&identifier, &rect) == S_OK;
+}
+
+static void delete_uid_icon(HWND hwnd, unsigned int uid) {
+    NOTIFYICONDATAW data;
+
+    ZeroMemory(&data, sizeof(data));
+    data.cbSize = sizeof(data);
+    data.hWnd = hwnd;
+    data.uID = uid;
+    Shell_NotifyIconW(NIM_DELETE, &data);
+}
+
+static DWORD WINAPI lyricify_cleanup_thread(LPVOID param) {
+    HWND hwnd = (HWND)param;
+    ULONGLONG start = GetTickCount64();
+
+    while (GetTickCount64() - start < LYRICIFY_CLEANUP_MS) {
+        if (uid_icon_exists(hwnd, 0)) {
+            delete_uid_icon(hwnd, 0);
+            if (!uid_icon_exists(hwnd, 0)) {
+                break;
+            }
+        }
+        if (g_lyricify_cleanup_stop_event &&
+            WaitForSingleObject(g_lyricify_cleanup_stop_event,
+                                LYRICIFY_CLEANUP_INTERVAL_MS) == WAIT_OBJECT_0) {
+            break;
+        }
+    }
+    return 0;
+}
+
+static void start_lyricify_cleanup(HWND hwnd) {
+    HANDLE thread;
+
+    if (!hwnd || InterlockedCompareExchange(&g_lyricify_cleanup_started, 1, 0) != 0) {
+        return;
+    }
+    g_lyricify_cleanup_hwnd = hwnd;
+    g_lyricify_cleanup_stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    thread = CreateThread(NULL, 0, lyricify_cleanup_thread, hwnd, 0, NULL);
+    if (!thread) {
+        if (g_lyricify_cleanup_stop_event) {
+            CloseHandle(g_lyricify_cleanup_stop_event);
+            g_lyricify_cleanup_stop_event = NULL;
+        }
+        InterlockedExchange(&g_lyricify_cleanup_started, 0);
+        return;
+    }
+    g_lyricify_cleanup_thread = thread;
+}
+
 static int patch_shell_notify_slot(void **function_slot, void *original, BYTE *module_base, SIZE_T module_size) {
     DWORD old_protect = 0;
     void *current;
@@ -507,10 +621,15 @@ static void install_shell_notify_iat_hook(void) {
 installed:
     install_shell_notify_iat_hook_a();
     if (g_shell_notify_iat_hooked && !g_shell_notify_ready_event) {
-        const wchar_t *event_name = _wcsicmp(g_process_name, L"explorer.exe") == 0
-            ? L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
-            : L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady";
-        g_shell_notify_ready_event = CreateEventW(NULL, TRUE, TRUE, event_name);
+        const wchar_t *event_name = NULL;
+        if (_wcsicmp(g_process_name, L"explorer.exe") == 0) {
+            event_name = L"Local\\LyricsTrayIconFixShellBlockExplorerReady";
+        } else if (_wcsicmp(g_process_name, L"GoogleDriveFS.exe") == 0) {
+            event_name = L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady";
+        }
+        if (event_name) {
+            g_shell_notify_ready_event = CreateEventW(NULL, TRUE, TRUE, event_name);
+        }
     }
     InterlockedExchange(&g_install_state, g_shell_notify_iat_hooked ? 2 : 0);
 }
@@ -640,6 +759,12 @@ static void inspect_window(HWND hwnd) {
         return;
     }
 
+    if (hnotify_icon_class(class_name) &&
+        (_wcsicmp(g_process_name, L"Lyricify Lite.exe") == 0 ||
+         _wcsicmp(g_process_name, L"BetterLyrics.WinUI3.exe") == 0)) {
+        start_lyricify_cleanup(hwnd);
+    }
+
     if (tray_rule_guid_for_process(g_process_name, &guid)) {
         if (guid_icon_exists(&guid)) {
             NOTIFYICONDATAW data;
@@ -760,18 +885,26 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
             wcsncpy(g_process_name, base_name(module_path), MAX_PATH - 1);
             g_process_name[MAX_PATH - 1] = L'\0';
             g_process_is_target = tray_rule_process_uses_message_hook(g_process_name);
+            if (_wcsicmp(g_process_name, L"LYRICIFY LITE.EXE") == 0 ||
+                _wcsicmp(g_process_name, L"BETTERLYRICS.WINUI3.EXE") == 0) {
+                HANDLE thread = CreateThread(
+                    NULL, 0, message_window_event_thread, NULL, 0, NULL);
+                if (thread) {
+                    g_message_event_thread_handle = thread;
+                }
+            }
             if (tray_rule_process_uses_shell_notify_block(g_process_name)) {
                 install_shell_notify_iat_hook();
                 if (_wcsicmp(g_process_name, L"GoogleDriveFS.exe") == 0) {
                     HANDLE thread = CreateThread(
                         NULL, 0, google_drive_cleanup_thread, NULL, 0, NULL);
                     if (thread) {
-                        CloseHandle(thread);
+                        g_google_cleanup_thread_handle = thread;
                     }
                     thread = CreateThread(
                         NULL, 0, google_drive_event_thread, NULL, 0, NULL);
                     if (thread) {
-                        CloseHandle(thread);
+                        g_google_event_thread_handle = thread;
                     }
                 }
             }
@@ -784,6 +917,36 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
         }
         if (g_google_event_thread_id) {
             PostThreadMessageW(g_google_event_thread_id, WM_QUIT, 0, 0);
+        }
+        if (g_message_event_thread_id) {
+            PostThreadMessageW(g_message_event_thread_id, WM_QUIT, 0, 0);
+        }
+        if (g_lyricify_cleanup_stop_event) {
+            SetEvent(g_lyricify_cleanup_stop_event);
+        }
+        if (g_google_event_thread_handle) {
+            WaitForSingleObject(g_google_event_thread_handle, 3000);
+            CloseHandle(g_google_event_thread_handle);
+            g_google_event_thread_handle = NULL;
+        }
+        if (g_google_cleanup_thread_handle) {
+            WaitForSingleObject(g_google_cleanup_thread_handle, 3000);
+            CloseHandle(g_google_cleanup_thread_handle);
+            g_google_cleanup_thread_handle = NULL;
+        }
+        if (g_message_event_thread_handle) {
+            WaitForSingleObject(g_message_event_thread_handle, 3000);
+            CloseHandle(g_message_event_thread_handle);
+            g_message_event_thread_handle = NULL;
+        }
+        if (g_lyricify_cleanup_thread) {
+            WaitForSingleObject(g_lyricify_cleanup_thread, 1500);
+            CloseHandle(g_lyricify_cleanup_thread);
+            g_lyricify_cleanup_thread = NULL;
+        }
+        if (g_lyricify_cleanup_stop_event) {
+            CloseHandle(g_lyricify_cleanup_stop_event);
+            g_lyricify_cleanup_stop_event = NULL;
         }
     }
 

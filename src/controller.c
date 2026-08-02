@@ -9,12 +9,12 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.55"
+#define TOOL_VERSION L"v0.59"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.55.dll"
-#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.55.exe"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.59.dll"
+#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.59.exe"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
@@ -418,7 +418,10 @@ static void hook_target_process_threads(DWORD pid) {
         return;
     }
     shell_block = tray_rule_process_uses_shell_notify_block(process_name);
-    if (shell_block && process_has_target_hook(pid)) {
+    int one_hook_process = shell_block &&
+        (!tray_rule_process_uses_message_hook(process_name) ||
+         _wcsicmp(process_name, L"GoogleDriveFS.exe") == 0);
+    if (one_hook_process && process_has_target_hook(pid)) {
         CloseHandle(snapshot);
         return;
     }
@@ -428,7 +431,7 @@ static void hook_target_process_threads(DWORD pid) {
         do {
             if (entry.th32OwnerProcessID == pid) {
                 hook_target_thread(pid, entry.th32ThreadID);
-                if (shell_block && process_has_target_hook(pid)) {
+                if (one_hook_process && process_has_target_hook(pid)) {
                     break;
                 }
             }
@@ -715,7 +718,9 @@ static BOOL CALLBACK scan_current_windows_proc(HWND hwnd, LPARAM lparam) {
     unsigned int uid = 0;
     if (tray_rule_uid_for_window(exe_name, class_name, &uid)) {
         NOTIFYICONDATAW data;
-        ensure_ps_tray_factory_rule(exe_name, class_name, uid);
+        if (tray_rule_should_write_ps_tray_factory(exe_name)) {
+            ensure_ps_tray_factory_rule(exe_name, class_name, uid);
+        }
         ZeroMemory(&data, sizeof(data));
         data.cbSize = sizeof(data);
         data.hWnd = hwnd;
@@ -768,7 +773,9 @@ static void process_sync_line(wchar_t *line, int *changed) {
         return;
     }
 
-    ensure_ps_tray_factory_rule(exe, class_name, (DWORD)_wtoi(uid_text));
+    if (tray_rule_should_write_ps_tray_factory(exe)) {
+        ensure_ps_tray_factory_rule(exe, class_name, (DWORD)_wtoi(uid_text));
+    }
     *changed = 1;
 }
 
@@ -1157,11 +1164,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.55.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.55.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.55.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.55.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.55.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.59.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.59.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.59.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.59.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.59.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {

@@ -21,6 +21,7 @@ int tray_rule_block_uid_uses_message_hook(int index);
 int tray_rule_process_is_target(const wchar_t *exe_name);
 int tray_rule_process_uses_message_hook(const wchar_t *exe_name);
 int tray_rule_process_uses_shell_notify_block(const wchar_t *exe_name);
+int tray_rule_should_write_ps_tray_factory(const wchar_t *exe_name);
 int tray_rule_count(void);
 const wchar_t *tray_rule_exe(int index);
 const wchar_t *tray_rule_class_name(int index);
