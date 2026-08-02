@@ -9,11 +9,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.40"
+#define TOOL_VERSION L"v0.41"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.40.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.41.dll"
 #define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper.exe"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
@@ -364,13 +364,6 @@ static int process_has_target_hook(DWORD pid) {
     return 0;
 }
 
-static int thread_has_message_queue(DWORD thread_id) {
-    GUITHREADINFO info;
-    ZeroMemory(&info, sizeof(info));
-    info.cbSize = sizeof(info);
-    return GetGUIThreadInfo(thread_id, &info) != FALSE;
-}
-
 static void hook_target_thread(DWORD pid, DWORD thread_id) {
     HHOOK call_hook;
     HHOOK msg_hook;
@@ -434,9 +427,6 @@ static void hook_target_process_threads(DWORD pid) {
     if (Thread32First(snapshot, &entry)) {
         do {
             if (entry.th32OwnerProcessID == pid) {
-                if (shell_block && !thread_has_message_queue(entry.th32ThreadID)) {
-                    continue;
-                }
                 hook_target_thread(pid, entry.th32ThreadID);
                 if (shell_block && process_has_target_hook(pid)) {
                     break;
@@ -445,6 +435,53 @@ static void hook_target_process_threads(DWORD pid) {
         } while (Thread32Next(snapshot, &entry));
     }
     CloseHandle(snapshot);
+}
+
+static void inject_dll_into_google_drive(DWORD pid) {
+    wchar_t directory[MAX_PATH];
+    wchar_t dll_path[MAX_PATH];
+    HANDLE process;
+    SIZE_T size;
+    LPVOID remote_path;
+    HMODULE kernel32;
+    FARPROC load_library;
+    HANDLE thread;
+    SIZE_T written = 0;
+
+    exe_directory(directory, MAX_PATH);
+    _snwprintf(dll_path, MAX_PATH - 1, L"%ls\\%ls", directory, DLL_NAME);
+    dll_path[MAX_PATH - 1] = L'\0';
+
+    process = OpenProcess(
+        PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+        PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | SYNCHRONIZE,
+        FALSE, pid);
+    if (!process) {
+        return;
+    }
+    size = (wcslen(dll_path) + 1) * sizeof(wchar_t);
+    remote_path = VirtualAllocEx(process, NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remote_path ||
+        !WriteProcessMemory(process, remote_path, dll_path, size, &written)) {
+        if (remote_path) {
+            VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
+        }
+        CloseHandle(process);
+        return;
+    }
+    kernel32 = GetModuleHandleW(L"kernel32.dll");
+    load_library = kernel32 ? GetProcAddress(kernel32, "LoadLibraryW") : NULL;
+    if (load_library) {
+        thread = CreateRemoteThread(
+            process, NULL, 0, (LPTHREAD_START_ROUTINE)load_library,
+            remote_path, 0, NULL);
+        if (thread) {
+            WaitForSingleObject(thread, 5000);
+            CloseHandle(thread);
+        }
+    }
+    VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
+    CloseHandle(process);
 }
 
 static void hook_existing_target_processes(void) {
@@ -471,6 +508,9 @@ static void hook_existing_target_processes(void) {
             }
             add_known_target_pid(entry.th32ProcessID);
             hook_target_process_threads(entry.th32ProcessID);
+            if (_wcsicmp(entry.szExeFile, L"GoogleDriveFS.exe") == 0) {
+                inject_dll_into_google_drive(entry.th32ProcessID);
+            }
         } while (Process32NextW(snapshot, &entry));
     }
     CloseHandle(snapshot);
