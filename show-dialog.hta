@@ -1,0 +1,35 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Lyrics Tray Icon Fix</title>
+<HTA:APPLICATION ID="DialogApp" SCROLL="no" INNERBORDER="no" CONTEXTMENU="no" />
+<style>
+html, body { margin: 0; padding: 0; background: #F3F4F6; }
+body { font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; color: #1B1B1B; }
+.dialog-title { height: 48px; line-height: 48px; padding: 0 16px; background: #FFFFFF; border-bottom: 1px solid #E2E4E8; font-size: 14px; font-weight: 600; }
+.dialog-body { margin: 16px; padding: 14px 16px; min-height: 260px; max-height: 360px; overflow: auto; background: #FFFFFF; border: 1px solid #E2E4E8; font-size: 13px; line-height: 1.6; white-space: pre-wrap; user-select: text; }
+.dialog-footer { text-align: right; padding: 0 16px 16px; }
+.dialog-button { width: 96px; height: 34px; border: 0; background: #0078D4; color: #FFFFFF; font-size: 13px; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; cursor: pointer; }
+</style>
+<script language="VBScript">
+Dim fso, htaPath, msgPath, stream, text
+Set fso = CreateObject("Scripting.FileSystemObject")
+htaPath = Unescape(Replace(Mid(window.location.href, 8), "/", "\"))
+msgPath = fso.GetParentFolderName(htaPath) & "\popup-message.txt"
+Set stream = CreateObject("ADODB.Stream")
+stream.Type = 2
+stream.Charset = "unicode"
+stream.Open
+stream.LoadFromFile msgPath
+text = stream.ReadText(-1)
+stream.Close
+document.getElementById("MessageText").innerText = text
+</script>
+</head>
+<body>
+<div class="dialog-title">Lyrics Tray Icon Fix</div>
+<div class="dialog-body" id="MessageText"></div>
+<div class="dialog-footer"><button class="dialog-button" onclick="window.close()">确定</button></div>
+</body>
+</html>
