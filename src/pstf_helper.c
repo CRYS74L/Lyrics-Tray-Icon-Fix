@@ -5,7 +5,7 @@
 
 #define MAX_THREAD_HOOKS 32
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
-#define DLL_NAME L"Lyrics Tray Icon Fix PS Restore Hook v0.47.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix PS Restore Hook v0.48.dll"
 #define HOOK_INSTALLED_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
 
 typedef struct ThreadHook {
@@ -244,7 +244,7 @@ int wmain(void) {
             CloseHandle(pstf_process);
             pstf_process = NULL;
             pstf_pid = 0;
-            for (int i = 0; i < 500; ++i) {
+            for (int i = 0; i < 3000; ++i) {
                 DWORD new_pid = 0;
                 HANDLE process = find_pstf_process(&new_pid);
                 if (process) {

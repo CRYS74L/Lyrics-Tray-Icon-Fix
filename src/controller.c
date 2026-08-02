@@ -9,11 +9,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.47"
+#define TOOL_VERSION L"v0.48"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.47.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.48.dll"
 #define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper.exe"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
@@ -555,7 +555,7 @@ static int install_target_thread_hooks(void) {
 }
 
 static int command_recover(DWORD old_explorer_pid) {
-    for (int i = 0; i < 500; ++i) {
+    for (int i = 0; i < 3000; ++i) {
         DWORD new_pid = 0;
         HANDLE process = open_shell_process(&new_pid);
         if (process) {
@@ -570,7 +570,7 @@ static int command_recover(DWORD old_explorer_pid) {
 }
 
 static HANDLE wait_for_new_shell_process(DWORD old_explorer_pid, DWORD *pid_out) {
-    for (int i = 0; i < 500; ++i) {
+    for (int i = 0; i < 3000; ++i) {
         DWORD new_pid = 0;
         HANDLE process = open_shell_process(&new_pid);
         if (process) {
@@ -1121,7 +1121,8 @@ static int command_start(void) {
             continue;
         }
         err(L"Hook wait failed: %lu\n", GetLastError());
-        break;
+        Sleep(100);
+        continue;
     }
 
     SetEvent(stop_event);
