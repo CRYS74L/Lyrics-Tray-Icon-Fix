@@ -38,6 +38,7 @@ typedef struct DelayImportDescriptor {
 
 static ShellNotifyIconWFn g_next_shell_notify_icon_w = NULL;
 static int g_shell_notify_iat_hooked = 0;
+static volatile LONG g_install_state = 0;
 static HANDLE g_shell_notify_ready_event = NULL;
 static void **g_patched_shell_notify_slot = NULL;
 
@@ -216,7 +217,8 @@ static int patch_shell_notify_slot(void **function_slot, void *original, BYTE *m
     DWORD old_protect = 0;
     void *current;
 
-    if (!function_slot || *function_slot == (void *)hooked_shell_notify_icon_w) {
+    if (!function_slot || g_patched_shell_notify_slot ||
+        *function_slot == (void *)hooked_shell_notify_icon_w) {
         return 0;
     }
 
@@ -251,6 +253,7 @@ static void restore_shell_notify_iat_hook(void) {
     }
     g_patched_shell_notify_slot = NULL;
     g_shell_notify_iat_hooked = 0;
+    InterlockedExchange(&g_install_state, 0);
 }
 
 static void install_shell_notify_iat_hook(void) {
@@ -264,7 +267,7 @@ static void install_shell_notify_iat_hook(void) {
     IMAGE_IMPORT_DESCRIPTOR *import_desc;
     SIZE_T module_size;
 
-    if (g_shell_notify_iat_hooked) {
+    if (InterlockedCompareExchange(&g_install_state, 1, 0) != 0) {
         return;
     }
 
@@ -275,25 +278,30 @@ static void install_shell_notify_iat_hook(void) {
     }
     shell32 = GetModuleHandleW(L"shell32.dll");
     if (!module) {
+        InterlockedExchange(&g_install_state, 0);
         return;
     }
     if (!shell32) {
         shell32 = LoadLibraryW(L"shell32.dll");
         if (!shell32) {
+            InterlockedExchange(&g_install_state, 0);
             return;
         }
     }
 
     original = GetProcAddress(shell32, "Shell_NotifyIconW");
     if (!original) {
+        InterlockedExchange(&g_install_state, 0);
         return;
     }
     dos = (IMAGE_DOS_HEADER *)module;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        InterlockedExchange(&g_install_state, 0);
         return;
     }
     nt = (IMAGE_NT_HEADERS *)((BYTE *)module + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) {
+        InterlockedExchange(&g_install_state, 0);
         return;
     }
     module_size = nt->OptionalHeader.SizeOfImage;
@@ -324,6 +332,7 @@ static void install_shell_notify_iat_hook(void) {
                 if (is_shell_notify_icon_w && patch_shell_notify_slot(function_slot, (void *)original,
                                                                        (BYTE *)module, module_size)) {
                     g_shell_notify_iat_hooked = 1;
+                    goto installed;
                 }
             }
         }
@@ -353,17 +362,20 @@ static void install_shell_notify_iat_hook(void) {
                     patch_shell_notify_slot((void **)&thunk->u1.Function, (void *)original,
                                             (BYTE *)module, module_size)) {
                     g_shell_notify_iat_hooked = 1;
+                    goto installed;
                 }
             }
         }
     }
 
+installed:
     if (g_shell_notify_iat_hooked && !g_shell_notify_ready_event) {
         const wchar_t *event_name = _wcsicmp(g_process_name, L"explorer.exe") == 0
             ? L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
             : L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady";
         g_shell_notify_ready_event = CreateEventW(NULL, TRUE, TRUE, event_name);
     }
+    InterlockedExchange(&g_install_state, g_shell_notify_iat_hooked ? 2 : 0);
 }
 
 static void inspect_window(HWND hwnd) {

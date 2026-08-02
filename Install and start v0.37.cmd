@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-rem Lyrics Tray Icon Fix v0.36
+rem Lyrics Tray Icon Fix v0.37
 set "ROOT=%~dp0"
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process PowerShell -Verb RunAs -Wait -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File ""%ROOT%install-startup-admin.ps1""'"

@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-rem Lyrics Tray Icon Fix v0.36
+rem Lyrics Tray Icon Fix v0.37
 set "ROOT=%~dp0"
 
 "%ROOT%bin\Lyrics Tray Icon Fix.exe" stop

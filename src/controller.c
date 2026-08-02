@@ -8,16 +8,17 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.36-pstf-restore-guard"
+#define TOOL_VERSION L"v0.37-shell-recovery"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.36.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.37-cold-recovery.dll"
 #define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper.exe"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
 #define PSTF_RESTORE_READY_EVENT_NAME L"Local\\LyricsTrayIconFixPstfRestoreReady"
+#define EXPLORER_WATCH_READY_EVENT_NAME L"Local\\LyricsTrayIconFixExplorerWatchReady"
 
 typedef struct SyncWorkerContext {
     HANDLE stop_event;
@@ -136,6 +137,71 @@ static int get_process_base_name(DWORD pid, wchar_t *buffer, DWORD count) {
 
     wcsncpy(buffer, base_name(path), count - 1);
     buffer[count - 1] = L'\0';
+    return 1;
+}
+
+static HANDLE open_shell_process(DWORD *pid_out) {
+    HWND taskbar = FindWindowW(L"Shell_TrayWnd", NULL);
+    wchar_t process_name[MAX_PATH];
+    DWORD pid = 0;
+    HANDLE process;
+
+    if (pid_out) {
+        *pid_out = 0;
+    }
+    if (!taskbar) {
+        return NULL;
+    }
+    GetWindowThreadProcessId(taskbar, &pid);
+    if (!pid || !get_process_base_name(pid, process_name, MAX_PATH) ||
+        _wcsicmp(process_name, L"explorer.exe") != 0) {
+        return NULL;
+    }
+    process = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (process && pid_out) {
+        *pid_out = pid;
+    }
+    return process;
+}
+
+static int launch_self_command(const wchar_t *arguments) {
+    wchar_t exe_path[MAX_PATH];
+    wchar_t directory[MAX_PATH];
+    wchar_t command_line[MAX_PATH * 2];
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION process;
+
+    if (!GetModuleFileNameW(NULL, exe_path, MAX_PATH)) {
+        return 0;
+    }
+    exe_directory(directory, MAX_PATH);
+    _snwprintf(command_line, (sizeof(command_line) / sizeof(command_line[0])) - 1,
+               L"\"%ls\" %ls", exe_path, arguments);
+    command_line[(sizeof(command_line) / sizeof(command_line[0])) - 1] = L'\0';
+    ZeroMemory(&startup, sizeof(startup));
+    ZeroMemory(&process, sizeof(process));
+    startup.cb = sizeof(startup);
+    if (!CreateProcessW(exe_path, command_line, NULL, NULL, FALSE, CREATE_NO_WINDOW,
+                        NULL, directory, &startup, &process)) {
+        return 0;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return 1;
+}
+
+static int command_recover(DWORD old_explorer_pid) {
+    for (int i = 0; i < 500; ++i) {
+        DWORD new_pid = 0;
+        HANDLE process = open_shell_process(&new_pid);
+        if (process) {
+            CloseHandle(process);
+            if (new_pid && new_pid != old_explorer_pid) {
+                return launch_self_command(L"start") ? 0 : 1;
+            }
+        }
+        Sleep(20);
+    }
     return 1;
 }
 
@@ -469,6 +535,8 @@ static int command_status(void) {
 
     print_rules();
     out(L"Background: %ls\n", is_running() ? L"running" : L"stopped");
+    out(L"Explorer restart watcher: %ls\n",
+        event_is_signaled(EXPLORER_WATCH_READY_EVENT_NAME) ? L"ready" : L"not_ready");
     out(L"Create-stage hook: explorer=%ls, google_drive=%ls\n",
         event_is_signaled(EXPLORER_HOOK_READY_EVENT_NAME) ? L"ready" : L"not_ready",
         event_is_signaled(GOOGLE_DRIVE_HOOK_READY_EVENT_NAME) ? L"ready" : L"not_ready");
@@ -509,6 +577,8 @@ static int command_stop(void) {
 }
 
 static int command_start(void) {
+    int restart_after_shell = 0;
+    DWORD explorer_pid = 0;
     HANDLE mutex = CreateMutexW(NULL, FALSE, MUTEX_NAME);
     if (!mutex) {
         err(L"Cannot create mutex: %lu\n", GetLastError());
@@ -627,16 +697,35 @@ static int command_start(void) {
         return 1;
     }
 
+    HANDLE explorer_process = open_shell_process(&explorer_pid);
+    HANDLE explorer_watch_ready = CreateEventW(
+        NULL, TRUE, explorer_process != NULL, EXPLORER_WATCH_READY_EVENT_NAME);
+    if (!explorer_watch_ready) {
+        err(L"Cannot create Explorer watcher status event: %lu\n", GetLastError());
+    }
+
     out(L"%ls started\n", TOOL_VERSION);
     for (;;) {
         DWORD wait;
         MSG msg;
+        HANDLE handles[2];
+        DWORD handle_count = 1;
 
-        wait = MsgWaitForMultipleObjects(1, &stop_event, FALSE, INFINITE, QS_ALLINPUT);
+        handles[0] = stop_event;
+        if (explorer_process) {
+            handles[1] = explorer_process;
+            handle_count = 2;
+        }
+
+        wait = MsgWaitForMultipleObjects(handle_count, handles, FALSE, INFINITE, QS_ALLINPUT);
         if (wait == WAIT_OBJECT_0) {
             break;
         }
-        if (wait == WAIT_OBJECT_0 + 1) {
+        if (explorer_process && wait == WAIT_OBJECT_0 + 1) {
+            restart_after_shell = 1;
+            break;
+        }
+        if (wait == WAIT_OBJECT_0 + handle_count) {
             while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
@@ -651,12 +740,21 @@ static int command_start(void) {
     UnhookWindowsHookEx(call_hook);
     UnhookWindowsHookEx(msg_hook);
     FreeLibrary(dll);
+    if (explorer_watch_ready) CloseHandle(explorer_watch_ready);
+    if (explorer_process) CloseHandle(explorer_process);
     wait_and_close_helper(pstf_helper);
     WaitForSingleObject(sync_thread, 3000);
     CloseHandle(sync_thread);
     CloseHandle(sync_event);
     CloseHandle(stop_event);
     CloseHandle(mutex);
+    if (restart_after_shell) {
+        wchar_t arguments[64];
+        _snwprintf(arguments, (sizeof(arguments) / sizeof(arguments[0])) - 1,
+                   L"recover %lu", explorer_pid);
+        arguments[(sizeof(arguments) / sizeof(arguments[0])) - 1] = L'\0';
+        launch_self_command(arguments);
+    }
     out(L"%ls stopped\n", TOOL_VERSION);
     return 0;
 }
@@ -668,6 +766,7 @@ static void usage(void) {
     out(L"  Lyrics Tray Icon Fix.exe stop    stop background hooks\n");
     out(L"  Lyrics Tray Icon Fix.exe apply   sync current rules once\n");
     out(L"  Lyrics Tray Icon Fix.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {
@@ -688,6 +787,9 @@ int wmain(int argc, wchar_t **argv) {
     }
     if (_wcsicmp(argv[1], L"status") == 0) {
         return command_status();
+    }
+    if (_wcsicmp(argv[1], L"recover") == 0 && argc >= 3) {
+        return command_recover((DWORD)wcstoul(argv[2], NULL, 10));
     }
 
     usage();
