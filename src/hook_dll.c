@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "rules.h"
 
@@ -16,8 +17,23 @@ static int g_process_is_target = 0;
 
 typedef BOOL (WINAPI *ShellNotifyIconWFn)(DWORD, PNOTIFYICONDATAW);
 
-static ShellNotifyIconWFn g_original_shell_notify_icon_w = NULL;
+typedef struct DelayImportDescriptor {
+    DWORD attributes;
+    DWORD name;
+    DWORD module_handle;
+    DWORD import_address_table;
+    DWORD import_name_table;
+    DWORD bound_import_address_table;
+    DWORD unload_import_address_table;
+    DWORD timestamp;
+} DelayImportDescriptor;
+
+static ShellNotifyIconWFn g_next_shell_notify_icon_w = NULL;
 static int g_shell_notify_iat_hooked = 0;
+static HANDLE g_shell_notify_ready_event = NULL;
+static void **g_patched_shell_notify_slot = NULL;
+
+static void install_shell_notify_iat_hook(void);
 
 static const wchar_t *base_name(const wchar_t *path) {
     const wchar_t *name = path;
@@ -172,6 +188,7 @@ static BOOL CALLBACK delete_current_block_uid_icon_proc(HWND hwnd, LPARAM lparam
 static DWORD WINAPI delete_current_block_uid_icons_thread(LPVOID param) {
     (void)param;
     Sleep(200);
+    install_shell_notify_iat_hook();
     EnumWindows(delete_current_block_uid_icon_proc, (LPARAM)GetCurrentProcessId());
     return 0;
 }
@@ -183,7 +200,48 @@ static BOOL WINAPI hooked_shell_notify_icon_w(DWORD message, PNOTIFYICONDATAW da
     if (should_block_guid_notify(message, data)) {
         return TRUE;
     }
-    return g_original_shell_notify_icon_w ? g_original_shell_notify_icon_w(message, data) : FALSE;
+    return g_next_shell_notify_icon_w ? g_next_shell_notify_icon_w(message, data) : FALSE;
+}
+
+static int patch_shell_notify_slot(void **function_slot, void *original, BYTE *module_base, SIZE_T module_size) {
+    DWORD old_protect = 0;
+    void *current;
+
+    if (!function_slot || *function_slot == (void *)hooked_shell_notify_icon_w) {
+        return 0;
+    }
+
+    current = *function_slot;
+    if (!VirtualProtect(function_slot, sizeof(void *), PAGE_READWRITE, &old_protect)) {
+        return 0;
+    }
+
+    if ((BYTE *)current >= module_base && (BYTE *)current < module_base + module_size) {
+        g_next_shell_notify_icon_w = (ShellNotifyIconWFn)original;
+    } else {
+        g_next_shell_notify_icon_w = (ShellNotifyIconWFn)current;
+    }
+    *function_slot = (void *)hooked_shell_notify_icon_w;
+    VirtualProtect(function_slot, sizeof(void *), old_protect, &old_protect);
+    FlushInstructionCache(GetCurrentProcess(), function_slot, sizeof(void *));
+    g_patched_shell_notify_slot = function_slot;
+    return 1;
+}
+
+static void restore_shell_notify_iat_hook(void) {
+    DWORD old_protect = 0;
+
+    if (!g_patched_shell_notify_slot || !g_next_shell_notify_icon_w ||
+        *g_patched_shell_notify_slot != (void *)hooked_shell_notify_icon_w) {
+        return;
+    }
+    if (VirtualProtect(g_patched_shell_notify_slot, sizeof(void *), PAGE_READWRITE, &old_protect)) {
+        *g_patched_shell_notify_slot = (void *)g_next_shell_notify_icon_w;
+        VirtualProtect(g_patched_shell_notify_slot, sizeof(void *), old_protect, &old_protect);
+        FlushInstructionCache(GetCurrentProcess(), g_patched_shell_notify_slot, sizeof(void *));
+    }
+    g_patched_shell_notify_slot = NULL;
+    g_shell_notify_iat_hooked = 0;
 }
 
 static void install_shell_notify_iat_hook(void) {
@@ -193,13 +251,19 @@ static void install_shell_notify_iat_hook(void) {
     IMAGE_DOS_HEADER *dos;
     IMAGE_NT_HEADERS *nt;
     IMAGE_DATA_DIRECTORY import_dir;
+    IMAGE_DATA_DIRECTORY delay_import_dir;
     IMAGE_IMPORT_DESCRIPTOR *import_desc;
+    SIZE_T module_size;
 
     if (g_shell_notify_iat_hooked) {
         return;
     }
 
-    module = GetModuleHandleW(NULL);
+    if (_wcsicmp(g_process_name, L"explorer.exe") == 0) {
+        module = GetModuleHandleW(L"stobject.dll");
+    } else {
+        module = GetModuleHandleW(NULL);
+    }
     shell32 = GetModuleHandleW(L"shell32.dll");
     if (!module) {
         return;
@@ -215,8 +279,6 @@ static void install_shell_notify_iat_hook(void) {
     if (!original) {
         return;
     }
-    g_original_shell_notify_icon_w = (ShellNotifyIconWFn)original;
-
     dos = (IMAGE_DOS_HEADER *)module;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
         return;
@@ -225,27 +287,73 @@ static void install_shell_notify_iat_hook(void) {
     if (nt->Signature != IMAGE_NT_SIGNATURE) {
         return;
     }
+    module_size = nt->OptionalHeader.SizeOfImage;
 
     import_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-    if (!import_dir.VirtualAddress) {
-        return;
-    }
+    if (import_dir.VirtualAddress) {
+        import_desc = (IMAGE_IMPORT_DESCRIPTOR *)((BYTE *)module + import_dir.VirtualAddress);
+        for (; import_desc->Name; ++import_desc) {
+            IMAGE_THUNK_DATA *thunk = (IMAGE_THUNK_DATA *)((BYTE *)module + import_desc->FirstThunk);
+            IMAGE_THUNK_DATA *lookup = import_desc->OriginalFirstThunk
+                ? (IMAGE_THUNK_DATA *)((BYTE *)module + import_desc->OriginalFirstThunk)
+                : NULL;
+            for (; thunk && thunk->u1.Function; ++thunk) {
+                void **function_slot = (void **)&thunk->u1.Function;
+                int is_shell_notify_icon_w = *function_slot == (void *)original;
 
-    import_desc = (IMAGE_IMPORT_DESCRIPTOR *)((BYTE *)module + import_dir.VirtualAddress);
-    for (; import_desc->Name; ++import_desc) {
-        IMAGE_THUNK_DATA *thunk = (IMAGE_THUNK_DATA *)((BYTE *)module + import_desc->FirstThunk);
-        for (; thunk && thunk->u1.Function; ++thunk) {
-            void **function_slot = (void **)&thunk->u1.Function;
-            if (*function_slot == (void *)original) {
-                DWORD old_protect = 0;
-                if (VirtualProtect(function_slot, sizeof(void *), PAGE_READWRITE, &old_protect)) {
-                    *function_slot = (void *)hooked_shell_notify_icon_w;
-                    VirtualProtect(function_slot, sizeof(void *), old_protect, &old_protect);
-                    FlushInstructionCache(GetCurrentProcess(), function_slot, sizeof(void *));
+                if (lookup) {
+                    if (!IMAGE_SNAP_BY_ORDINAL(lookup->u1.Ordinal)) {
+                        IMAGE_IMPORT_BY_NAME *import_name =
+                            (IMAGE_IMPORT_BY_NAME *)((BYTE *)module + lookup->u1.AddressOfData);
+                        is_shell_notify_icon_w = strcmp((const char *)import_name->Name, "Shell_NotifyIconW") == 0;
+                    } else {
+                        is_shell_notify_icon_w = 0;
+                    }
+                    ++lookup;
+                }
+
+                if (is_shell_notify_icon_w && patch_shell_notify_slot(function_slot, (void *)original,
+                                                                       (BYTE *)module, module_size)) {
                     g_shell_notify_iat_hooked = 1;
                 }
             }
         }
+    }
+
+    delay_import_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
+    if (delay_import_dir.VirtualAddress) {
+        DelayImportDescriptor *delay_desc =
+            (DelayImportDescriptor *)((BYTE *)module + delay_import_dir.VirtualAddress);
+        for (; delay_desc->name; ++delay_desc) {
+            IMAGE_THUNK_DATA *thunk;
+            IMAGE_THUNK_DATA *lookup;
+
+            if (!(delay_desc->attributes & 1) ||
+                !delay_desc->import_address_table || !delay_desc->import_name_table) {
+                continue;
+            }
+            thunk = (IMAGE_THUNK_DATA *)((BYTE *)module + delay_desc->import_address_table);
+            lookup = (IMAGE_THUNK_DATA *)((BYTE *)module + delay_desc->import_name_table);
+            for (; thunk->u1.Function && lookup->u1.AddressOfData; ++thunk, ++lookup) {
+                IMAGE_IMPORT_BY_NAME *import_name;
+                if (IMAGE_SNAP_BY_ORDINAL(lookup->u1.Ordinal)) {
+                    continue;
+                }
+                import_name = (IMAGE_IMPORT_BY_NAME *)((BYTE *)module + lookup->u1.AddressOfData);
+                if (strcmp((const char *)import_name->Name, "Shell_NotifyIconW") == 0 &&
+                    patch_shell_notify_slot((void **)&thunk->u1.Function, (void *)original,
+                                            (BYTE *)module, module_size)) {
+                    g_shell_notify_iat_hooked = 1;
+                }
+            }
+        }
+    }
+
+    if (g_shell_notify_iat_hooked && !g_shell_notify_ready_event) {
+        const wchar_t *event_name = _wcsicmp(g_process_name, L"explorer.exe") == 0
+            ? L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
+            : L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady";
+        g_shell_notify_ready_event = CreateEventW(NULL, TRUE, TRUE, event_name);
     }
 }
 
@@ -334,8 +442,6 @@ __declspec(dllexport) LRESULT CALLBACK GetMsgHookProc(int code, WPARAM wparam, L
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
-    (void)reserved;
-
     if (reason == DLL_PROCESS_ATTACH) {
         wchar_t module_path[MAX_PATH];
         GUID guid;
@@ -362,12 +468,17 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
             g_process_is_target = tray_rule_process_uses_message_hook(g_process_name);
             if (tray_rule_process_uses_shell_notify_block(g_process_name)) {
                 HANDLE thread;
-                install_shell_notify_iat_hook();
                 thread = CreateThread(NULL, 0, delete_current_block_uid_icons_thread, NULL, 0, NULL);
                 if (thread) {
                     CloseHandle(thread);
                 }
             }
+        }
+    } else if (reason == DLL_PROCESS_DETACH && reserved == NULL) {
+        restore_shell_notify_iat_hook();
+        if (g_shell_notify_ready_event) {
+            CloseHandle(g_shell_notify_ready_event);
+            g_shell_notify_ready_event = NULL;
         }
     }
 

@@ -8,11 +8,13 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.31-message-pump-hook-dispatch"
+#define TOOL_VERSION L"v0.32-stobject-shell-notify-hook"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.31.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.32.dll"
+#define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
+#define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 
 typedef struct SyncWorkerContext {
     HANDLE stop_event;
@@ -369,6 +371,17 @@ static int is_running(void) {
     return 1;
 }
 
+static int event_is_signaled(const wchar_t *name) {
+    HANDLE event = OpenEventW(SYNCHRONIZE, FALSE, name);
+    DWORD wait;
+    if (!event) {
+        return 0;
+    }
+    wait = WaitForSingleObject(event, 0);
+    CloseHandle(event);
+    return wait == WAIT_OBJECT_0;
+}
+
 static void print_rules(void) {
     out(L"Version: %ls\n", TOOL_VERSION);
     out(L"Notify icon rules:\n");
@@ -423,6 +436,9 @@ static int command_status(void) {
 
     print_rules();
     out(L"Background: %ls\n", is_running() ? L"running" : L"stopped");
+    out(L"Create-stage hook: explorer=%ls, google_drive=%ls\n",
+        event_is_signaled(EXPLORER_HOOK_READY_EVENT_NAME) ? L"ready" : L"not_ready",
+        event_is_signaled(GOOGLE_DRIVE_HOOK_READY_EVENT_NAME) ? L"ready" : L"not_ready");
     ctx = sync_current_windows();
     out(L"Current matched notify icons: %d\n", ctx.matches);
     out(L"Current hidden windows: %d\n", ctx.hidden_windows);
