@@ -6,6 +6,11 @@
 
 #include "rules.h"
 
+static const GUID kGoogleDrivePreservedGuid = {
+    0x6BBAE539, 0x2232, 0x434A,
+    { 0xA4, 0xE5, 0x9A, 0x33, 0x56, 0x0C, 0x62, 0x83 }
+};
+
 static wchar_t g_process_name[MAX_PATH];
 static wchar_t g_queue_path[MAX_PATH];
 static wchar_t g_last_class_name[256];
@@ -140,6 +145,9 @@ static int should_block_guid_notify(DWORD message, const NOTIFYICONDATAW *data) 
     if (message != NIM_ADD && message != NIM_MODIFY && message != NIM_SETVERSION) {
         return 0;
     }
+    if (_wcsicmp(g_process_name, L"GoogleDriveFS.exe") == 0) {
+        return !same_guid(&data->guidItem, &kGoogleDrivePreservedGuid);
+    }
     if (!tray_rule_guid_for_process(g_process_name, &rule_guid)) {
         return 0;
     }
@@ -157,7 +165,9 @@ static int should_block_uid_notify(DWORD message, const NOTIFYICONDATAW *data) {
         return 0;
     }
     if (data->uFlags & NIF_GUID) {
-        return 0;
+        if (_wcsicmp(g_process_name, L"explorer.exe") != 0) {
+            return 0;
+        }
     }
     if (!GetClassNameW(data->hWnd, class_name, (int)(sizeof(class_name) / sizeof(class_name[0])))) {
         return 0;

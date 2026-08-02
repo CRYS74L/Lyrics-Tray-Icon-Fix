@@ -9,11 +9,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.39"
+#define TOOL_VERSION L"v0.40"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.39.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.40.dll"
 #define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper.exe"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
