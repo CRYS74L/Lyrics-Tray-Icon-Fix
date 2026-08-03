@@ -3,6 +3,7 @@
 #include <shellapi.h>
 #include <stdio.h>
 #include <string.h>
+#include <wchar.h>
 
 #include "rules.h"
 
@@ -76,6 +77,23 @@ static const wchar_t *base_name(const wchar_t *path) {
         }
     }
     return name;
+}
+
+static int is_previous_lyrics_hook(void *address) {
+    MEMORY_BASIC_INFORMATION info;
+    wchar_t module_path[MAX_PATH];
+    const wchar_t *name;
+
+    if (!address || VirtualQuery(address, &info, sizeof(info)) == 0) {
+        return 0;
+    }
+    if (!info.AllocationBase ||
+        !GetModuleFileNameW((HMODULE)info.AllocationBase, module_path, MAX_PATH)) {
+        return 0;
+    }
+    name = base_name(module_path);
+    return wcsstr(name, L"Lyrics Tray Icon Fix") != NULL &&
+           wcsstr(name, L"Hook") != NULL;
 }
 
 static void uppercase_copy(wchar_t *dest, int dest_count, const wchar_t *src) {
@@ -202,7 +220,12 @@ static BOOL WINAPI hooked_shell_notify_icon_w(DWORD message, PNOTIFYICONDATAW da
     int block_uid = should_block_uid_notify(message, data);
     int block_guid = should_block_guid_notify(message, data);
     if (block_uid) {
-        return TRUE;
+        if (message == NIM_ADD || message == NIM_MODIFY) {
+            data->uFlags |= NIF_STATE;
+            data->dwState = NIS_HIDDEN;
+            data->dwStateMask = NIS_HIDDEN;
+        }
+        return g_next_shell_notify_icon_w ? g_next_shell_notify_icon_w(message, data) : FALSE;
     }
     if (block_guid) {
         return TRUE;
@@ -254,7 +277,12 @@ static BOOL WINAPI hooked_shell_notify_icon_a(DWORD message, PNOTIFYICONDATAA da
     int block_uid = should_block_uid_notify_a(message, data);
     int block_guid = should_block_guid_notify_a(message, data);
     if (block_uid) {
-        return TRUE;
+        if (message == NIM_ADD || message == NIM_MODIFY) {
+            data->uFlags |= NIF_STATE;
+            data->dwState = NIS_HIDDEN;
+            data->dwStateMask = NIS_HIDDEN;
+        }
+        return g_next_shell_notify_icon_a ? g_next_shell_notify_icon_a(message, data) : FALSE;
     }
     if (block_guid) {
         return TRUE;
@@ -438,7 +466,9 @@ static int patch_shell_notify_slot(void **function_slot, void *original, BYTE *m
         return 0;
     }
 
-    if (!current ||
+    if (is_previous_lyrics_hook(current)) {
+        g_next_shell_notify_icon_w = (ShellNotifyIconWFn)original;
+    } else if (!current ||
         (BYTE *)current == original ||
         ((BYTE *)current >= module_base && (BYTE *)current < module_base + module_size)) {
         g_next_shell_notify_icon_w = (ShellNotifyIconWFn)original;
@@ -466,7 +496,9 @@ static int patch_shell_notify_slot_a(void **function_slot, void *original, BYTE 
         return 0;
     }
 
-    if (!current ||
+    if (is_previous_lyrics_hook(current)) {
+        g_next_shell_notify_icon_a = (ShellNotifyIconAFn)original;
+    } else if (!current ||
         (BYTE *)current == original ||
         ((BYTE *)current >= module_base && (BYTE *)current < module_base + module_size)) {
         g_next_shell_notify_icon_a = (ShellNotifyIconAFn)original;

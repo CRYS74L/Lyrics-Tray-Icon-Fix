@@ -1,7 +1,7 @@
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
-exe = root & "\bin\Lyrics Tray Icon Fix v0.59.exe"
+exe = root & "\bin\Lyrics Tray Icon Fix v0.60.exe"
 bin = root & "\bin"
 marker = root & "\watchdog-stop.txt"
 
