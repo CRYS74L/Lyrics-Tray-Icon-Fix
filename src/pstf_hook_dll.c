@@ -205,9 +205,6 @@ __declspec(dllexport) LRESULT CALLBACK PstfCallWndHookProc(
     int code, WPARAM wparam, LPARAM lparam) {
     (void)wparam;
     (void)lparam;
-    if (code >= 0 && g_process_is_pstf) {
-        install_iat_hook();
-    }
     return CallNextHookEx(NULL, code, wparam, lparam);
 }
 

@@ -233,12 +233,7 @@ static BOOL WINAPI hooked_shell_notify_icon_w(DWORD message, PNOTIFYICONDATAW da
     int block_uid = should_block_uid_notify(message, data);
     int block_guid = should_block_guid_notify(message, data);
     if (block_uid) {
-        if (message == NIM_ADD || message == NIM_MODIFY) {
-            data->uFlags |= NIF_STATE;
-            data->dwState = NIS_HIDDEN;
-            data->dwStateMask = NIS_HIDDEN;
-        }
-        return g_next_shell_notify_icon_w ? g_next_shell_notify_icon_w(message, data) : FALSE;
+        return TRUE;
     }
     if (block_guid) {
         return TRUE;
@@ -290,12 +285,7 @@ static BOOL WINAPI hooked_shell_notify_icon_a(DWORD message, PNOTIFYICONDATAA da
     int block_uid = should_block_uid_notify_a(message, data);
     int block_guid = should_block_guid_notify_a(message, data);
     if (block_uid) {
-        if (message == NIM_ADD || message == NIM_MODIFY) {
-            data->uFlags |= NIF_STATE;
-            data->dwState = NIS_HIDDEN;
-            data->dwStateMask = NIS_HIDDEN;
-        }
-        return g_next_shell_notify_icon_a ? g_next_shell_notify_icon_a(message, data) : FALSE;
+        return TRUE;
     }
     if (block_guid) {
         return TRUE;
