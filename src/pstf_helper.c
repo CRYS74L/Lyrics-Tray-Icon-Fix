@@ -5,7 +5,7 @@
 
 #define MAX_THREAD_HOOKS 32
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
-#define DLL_NAME L"Lyrics Tray Icon Fix PS Restore Hook v0.89.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix PS Restore Hook v0.90.dll"
 #define HOOK_INSTALLED_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
 
 typedef struct ThreadHook {
