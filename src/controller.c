@@ -9,14 +9,15 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.74"
+#define TOOL_VERSION L"v0.75"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.74.dll"
-#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.74.exe"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.75.dll"
+#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.75.exe"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
+#define GOOGLE_CLEANUP_EVENT_NAME L"Local\\LyricsTrayIconFixGoogleCleanup"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
 #define PSTF_RESTORE_READY_EVENT_NAME L"Local\\LyricsTrayIconFixPstfRestoreReady"
 #define EXPLORER_WATCH_READY_EVENT_NAME L"Local\\LyricsTrayIconFixExplorerWatchReady"
@@ -1025,6 +1026,7 @@ static int command_stop(void) {
 static int command_start(void) {
     int restart_after_shell = 0;
     DWORD explorer_pid = 0;
+    HANDLE google_cleanup_event = NULL;
 
     if (system_shutting_down()) {
         return 1;
@@ -1140,7 +1142,14 @@ static int command_start(void) {
     g_hook_dll = dll;
     g_call_proc = call_proc;
     g_msg_proc = msg_proc;
+    google_cleanup_event = CreateEventW(NULL, TRUE, FALSE, GOOGLE_CLEANUP_EVENT_NAME);
+    if (!google_cleanup_event) {
+        err(L"Cannot create Google cleanup event: %lu\n", GetLastError());
+    }
     install_target_thread_hooks();
+    if (google_cleanup_event) {
+        SetEvent(google_cleanup_event);
+    }
 
     HANDLE explorer_process = open_shell_process(&explorer_pid);
     HANDLE explorer_watch_ready = CreateEventW(
@@ -1192,6 +1201,9 @@ static int command_start(void) {
             }
             hook_target_process_threads(explorer_pid);
             hook_existing_target_processes();
+            if (google_cleanup_event) {
+                SetEvent(google_cleanup_event);
+            }
             continue;
         }
         if (wait == WAIT_OBJECT_0 + handle_count) {
@@ -1216,6 +1228,10 @@ static int command_start(void) {
     g_call_proc = NULL;
     g_msg_proc = NULL;
     FreeLibrary(dll);
+    if (google_cleanup_event) {
+        CloseHandle(google_cleanup_event);
+        google_cleanup_event = NULL;
+    }
     if (explorer_watch_ready) CloseHandle(explorer_watch_ready);
     if (explorer_process) CloseHandle(explorer_process);
     wait_and_close_helper(pstf_helper);
@@ -1239,11 +1255,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.74.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.74.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.74.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.74.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.74.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.75.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.75.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.75.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.75.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.75.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {

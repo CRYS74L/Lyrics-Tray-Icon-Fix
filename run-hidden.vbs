@@ -1,7 +1,7 @@
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
-exe = root & "\bin\Lyrics Tray Icon Fix v0.74.exe"
+exe = root & "\bin\Lyrics Tray Icon Fix v0.75.exe"
 bin = root & "\bin"
 marker = root & "\watchdog-stop.txt"
 
@@ -28,6 +28,8 @@ fso.DeleteFile bin & "\Lyrics Tray Icon Fix Hook v0.72.dll", True
 fso.DeleteFile bin & "\Lyrics Tray Icon Fix PS Restore Hook v0.72.dll", True
 fso.DeleteFile bin & "\Lyrics Tray Icon Fix Hook v0.73.dll", True
 fso.DeleteFile bin & "\Lyrics Tray Icon Fix PS Restore Hook v0.73.dll", True
+fso.DeleteFile bin & "\Lyrics Tray Icon Fix Hook v0.74.dll", True
+fso.DeleteFile bin & "\Lyrics Tray Icon Fix PS Restore Hook v0.74.dll", True
 On Error GoTo 0
 
 Do
