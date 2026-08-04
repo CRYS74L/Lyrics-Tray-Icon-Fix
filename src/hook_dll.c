@@ -211,7 +211,7 @@ static int should_block_guid_notify(DWORD message, const NOTIFYICONDATAW *data) 
 static int should_block_uid_notify(DWORD message, const NOTIFYICONDATAW *data) {
     wchar_t class_name[256];
 
-    if (!data || !data->hWnd) {
+    if (!data || !data->hWnd || !IsWindow(data->hWnd)) {
         return 0;
     }
     if (message != NIM_ADD && message != NIM_MODIFY && message != NIM_SETVERSION) {
@@ -244,7 +244,7 @@ static BOOL WINAPI hooked_shell_notify_icon_w(DWORD message, PNOTIFYICONDATAW da
 static int should_block_uid_notify_a(DWORD message, const NOTIFYICONDATAA *data) {
     wchar_t class_name[256];
 
-    if (!data || !data->hWnd) {
+    if (!data || !data->hWnd || !IsWindow(data->hWnd)) {
         return 0;
     }
     if (message != NIM_ADD && message != NIM_MODIFY && message != NIM_SETVERSION) {
@@ -580,9 +580,16 @@ static void scan_module_shell_imports(HMODULE module, FARPROC original_w, FARPRO
     IMAGE_DATA_DIRECTORY delay_import_dir;
     IMAGE_IMPORT_DESCRIPTOR *import_desc;
     SIZE_T module_size;
+    wchar_t module_path[MAX_PATH];
+    const wchar_t *module_name = L"";
+    int allow_delay_import = 0;
 
     if (!module || is_our_hook_module(module)) {
         return;
+    }
+    if (GetModuleFileNameW(module, module_path, MAX_PATH)) {
+        module_name = base_name(module_path);
+        allow_delay_import = _wcsicmp(module_name, L"stobject.dll") == 0;
     }
     dos = (IMAGE_DOS_HEADER *)module;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
@@ -641,7 +648,7 @@ static void scan_module_shell_imports(HMODULE module, FARPROC original_w, FARPRO
     }
 
     delay_import_dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
-    if (delay_import_dir.VirtualAddress) {
+    if (allow_delay_import && delay_import_dir.VirtualAddress) {
         DelayImportDescriptor *delay_desc =
             (DelayImportDescriptor *)((BYTE *)module + delay_import_dir.VirtualAddress);
         for (; delay_desc->name; ++delay_desc) {
