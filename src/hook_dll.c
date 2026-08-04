@@ -196,6 +196,7 @@ static int same_guid(const GUID *a, const GUID *b) {
            a->Data4[7] == b->Data4[7];
 }
 
+
 static int should_block_guid_notify(DWORD message, const NOTIFYICONDATAW *data) {
     GUID rule_guid;
 

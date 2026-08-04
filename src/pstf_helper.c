@@ -5,7 +5,7 @@
 
 #define MAX_THREAD_HOOKS 32
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
-#define DLL_NAME L"Lyrics Tray Icon Fix PS Restore Hook v0.82.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix PS Restore Hook v0.87.dll"
 #define HOOK_INSTALLED_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
 
 typedef struct ThreadHook {
@@ -174,6 +174,48 @@ static HANDLE find_pstf_process(DWORD *pid_out) {
     return NULL;
 }
 
+static void inject_dll_into_pstf(DWORD pid, const wchar_t *dll_path) {
+    HANDLE process;
+    SIZE_T size;
+    LPVOID remote_path;
+    SIZE_T written = 0;
+    HMODULE kernel32;
+    FARPROC load_library;
+    HANDLE thread;
+
+    process = OpenProcess(
+        PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+        PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | SYNCHRONIZE,
+        FALSE, pid);
+    if (!process) {
+        return;
+    }
+    size = (wcslen(dll_path) + 1) * sizeof(wchar_t);
+    remote_path = VirtualAllocEx(
+        process, NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remote_path ||
+        !WriteProcessMemory(process, remote_path, dll_path, size, &written)) {
+        if (remote_path) {
+            VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
+        }
+        CloseHandle(process);
+        return;
+    }
+    kernel32 = GetModuleHandleW(L"kernel32.dll");
+    load_library = kernel32 ? GetProcAddress(kernel32, "LoadLibraryW") : NULL;
+    if (load_library) {
+        thread = CreateRemoteThread(
+            process, NULL, 0, (LPTHREAD_START_ROUTINE)load_library,
+            remote_path, 0, NULL);
+        if (thread) {
+            WaitForSingleObject(thread, 5000);
+            CloseHandle(thread);
+        }
+    }
+    VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
+    CloseHandle(process);
+}
+
 static void exe_directory(wchar_t *buffer, DWORD count) {
     DWORD length = GetModuleFileNameW(NULL, buffer, count);
     if (!length || length >= count) {
@@ -222,6 +264,7 @@ int wmain(void) {
 
     pstf_process = find_pstf_process(&pstf_pid);
     if (pstf_process) {
+        inject_dll_into_pstf(pstf_pid, dll_path);
         hook_pstf_threads(pstf_pid);
     }
 

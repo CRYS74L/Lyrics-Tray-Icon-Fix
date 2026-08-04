@@ -205,6 +205,9 @@ __declspec(dllexport) LRESULT CALLBACK PstfCallWndHookProc(
     int code, WPARAM wparam, LPARAM lparam) {
     (void)wparam;
     (void)lparam;
+    if (code >= 0 && !g_patched_slot) {
+        install_iat_hook();
+    }
     return CallNextHookEx(NULL, code, wparam, lparam);
 }
 
@@ -215,6 +218,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
         if (GetModuleFileNameA(NULL, path, MAX_PATH) &&
             _stricmp(base_name(path), "PSTrayFactory.exe") == 0) {
             g_process_is_pstf = 1;
+            install_iat_hook();
         }
     } else if (reason == DLL_PROCESS_DETACH && reserved == NULL) {
         restore_iat_hook();
