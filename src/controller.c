@@ -9,12 +9,12 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.65"
+#define TOOL_VERSION L"v0.66"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.65.dll"
-#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.65.exe"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.66.dll"
+#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.66.exe"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
@@ -372,7 +372,8 @@ static int system_shutting_down(void) {
 }
 
 static BOOL WINAPI console_ctrl_handler(DWORD type) {
-    if (type == CTRL_LOGOFF_EVENT || type == CTRL_SHUTDOWN_EVENT) {
+    if (type == CTRL_CLOSE_EVENT || type == CTRL_LOGOFF_EVENT ||
+        type == CTRL_SHUTDOWN_EVENT) {
         InterlockedExchange(&g_shutdown_requested, 1);
         write_watchdog_stop_marker();
         if (g_shutdown_stop_event) {
@@ -1238,11 +1239,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.65.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.65.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.65.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.65.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.65.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.66.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.66.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.66.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.66.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.66.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {
