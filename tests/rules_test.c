@@ -89,7 +89,7 @@ int main(void) {
     failures += expect_message_hook(L"Lyricify Lite.exe", 1, "lyricify keeps late cleanup hook");
     failures += expect_message_hook(L"BetterLyrics.WinUI3.exe", 1, "betterlyrics keeps late cleanup hook");
     failures += expect_shell_block(L"explorer.exe", 1, "explorer creation block");
-    failures += expect_shell_block(L"GoogleDriveFS.exe", 1, "google drive creation block");
+    failures += expect_shell_block(L"GoogleDriveFS.exe", 0, "google drive creation block is disabled");
     failures += expect_shell_block(L"Other.exe", 0, "other process no creation block");
 
     failures += expect_match(L"Lyricify Lite.exe", L"H.NotifyIcon_e87a2320-3a24-461c-99f6-c38bf4eb8d8b", 0, 1, "lyricify wrong icon");
@@ -115,7 +115,7 @@ int main(void) {
     failures += expect_block_uid(L"explorer.exe", L"SystemTray_Main", 101, 0, "microphone block class must be atl");
 
     failures += expect_match(L"GoogleDriveFS.exe", L"ATL:00007FF7481AE710", 11376, 0, "google drive uid is not a repeated delete rule");
-    failures += expect_block_uid(L"GoogleDriveFS.exe", L"ATL:00007FF7481AE710", 11376, 1, "google drive uid tray icon is blocked on create");
+    failures += expect_block_uid(L"GoogleDriveFS.exe", L"ATL:00007FF7481AE710", 11376, 0, "google drive uid tray icon is not blocked by uid rule");
     failures += expect_block_uid(L"GoogleDriveFS.exe", L"ATL:00007FF7481AE710", 0, 0, "google drive block uid must be exact");
     failures += expect_block_uid(L"GoogleDriveFS.exe", L"Windows.UI.Core.CoreWindow", 11376, 0, "google drive block class must be atl");
 

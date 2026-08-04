@@ -9,12 +9,12 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.90"
+#define TOOL_VERSION L"v0.92"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.90.dll"
-#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.90.exe"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.92.dll"
+#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.92.exe"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
@@ -22,6 +22,8 @@
 #define EXPLORER_WATCH_READY_EVENT_NAME L"Local\\LyricsTrayIconFixExplorerWatchReady"
 #define STARTUP_WATCH_MS 15000
 #define STARTUP_WATCH_INTERVAL_MS 50
+#define EXPLORER_CLEANUP_MS 30000
+#define EXPLORER_CLEANUP_INTERVAL_MS 100
 
 typedef struct SyncWorkerContext {
     HANDLE stop_event;
@@ -57,6 +59,7 @@ static int g_known_target_pid_count = 0;
 static HANDLE g_shutdown_stop_event = NULL;
 static volatile LONG g_shutdown_requested = 0;
 static HANDLE g_startup_watcher_thread = NULL;
+static HANDLE g_explorer_cleanup_thread = NULL;
 
 static int event_is_signaled(const wchar_t *name);
 static CurrentScanContext sync_current_windows(void);
@@ -563,10 +566,7 @@ static void hook_existing_target_processes(void) {
             already_known = known_target_pid(entry.th32ProcessID);
             add_known_target_pid(entry.th32ProcessID);
             hook_target_process_threads(entry.th32ProcessID);
-            if (_wcsicmp(entry.szExeFile, L"GoogleDriveFS.exe") == 0 &&
-                !already_known) {
-                inject_dll_into_process(entry.th32ProcessID);
-            }
+            (void)already_known;
         } while (Process32NextW(snapshot, &entry));
     }
     CloseHandle(snapshot);
@@ -851,6 +851,10 @@ static BOOL CALLBACK scan_current_windows_proc(HWND hwnd, LPARAM lparam) {
         if (!tray_rule_block_uid_for_window_class_at(exe_name, class_name, i, &uid)) {
             continue;
         }
+        if (_wcsicmp(exe_name, L"GoogleDriveFS.exe") == 0 &&
+            wcsstr(window_text, L"Google") != NULL) {
+            continue;
+        }
         ZeroMemory(&data, sizeof(data));
         data.cbSize = sizeof(data);
         data.hWnd = hwnd;
@@ -889,6 +893,67 @@ static DWORD WINAPI startup_target_watcher(LPVOID param) {
             break;
         }
         WaitForSingleObject(stop_event, STARTUP_WATCH_INTERVAL_MS);
+    }
+    return 0;
+}
+
+static BOOL CALLBACK google_drive_duplicate_cleanup_proc(HWND hwnd, LPARAM lparam) {
+    DWORD pid = 0;
+    wchar_t exe_name[MAX_PATH];
+    wchar_t class_name[256];
+    wchar_t window_text[256];
+    NOTIFYICONIDENTIFIER identifier;
+    RECT rect;
+
+    (void)lparam;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (!pid || !get_process_base_name(pid, exe_name, MAX_PATH) ||
+        _wcsicmp(exe_name, L"GoogleDriveFS.exe") != 0) {
+        return TRUE;
+    }
+    if (!GetClassNameW(hwnd, class_name,
+                       (int)(sizeof(class_name) / sizeof(class_name[0]))) ||
+        wcsncmp(class_name, L"ATL:", 4) != 0) {
+        return TRUE;
+    }
+    GetWindowTextW(hwnd, window_text,
+                   (int)(sizeof(window_text) / sizeof(window_text[0])));
+    if (wcsstr(window_text, L"Google") != NULL) {
+        return TRUE;
+    }
+
+    ZeroMemory(&identifier, sizeof(identifier));
+    identifier.cbSize = sizeof(identifier);
+    identifier.hWnd = hwnd;
+    identifier.uID = 11376;
+    if (Shell_NotifyIconGetRect(&identifier, &rect) == S_OK) {
+        NOTIFYICONDATAW data;
+        ZeroMemory(&data, sizeof(data));
+        data.cbSize = sizeof(data);
+        data.hWnd = hwnd;
+        data.uID = 11376;
+        Shell_NotifyIconW(NIM_DELETE, &data);
+    }
+    return TRUE;
+}
+
+static void cleanup_google_drive_duplicate_icons(void) {
+    EnumWindows(google_drive_duplicate_cleanup_proc, 0);
+}
+
+static DWORD WINAPI explorer_restart_cleanup_thread(LPVOID param) {
+    HANDLE stop_event = (HANDLE)param;
+    ULONGLONG start = GetTickCount64();
+
+    while (GetTickCount64() - start < EXPLORER_CLEANUP_MS) {
+        if (WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
+            break;
+        }
+        cleanup_google_drive_duplicate_icons();
+        if (WaitForSingleObject(stop_event, EXPLORER_CLEANUP_INTERVAL_MS) ==
+            WAIT_OBJECT_0) {
+            break;
+        }
     }
     return 0;
 }
@@ -1278,6 +1343,13 @@ static int command_start(void) {
             }
             hook_target_process_threads(explorer_pid);
             hook_existing_target_processes();
+            if (g_explorer_cleanup_thread) {
+                WaitForSingleObject(g_explorer_cleanup_thread, 1000);
+                CloseHandle(g_explorer_cleanup_thread);
+                g_explorer_cleanup_thread = NULL;
+            }
+            g_explorer_cleanup_thread = CreateThread(
+                NULL, 0, explorer_restart_cleanup_thread, stop_event, 0, NULL);
             continue;
         }
         if (wait == WAIT_OBJECT_0 + handle_count) {
@@ -1302,6 +1374,11 @@ static int command_start(void) {
         WaitForSingleObject(g_startup_watcher_thread, 3000);
         CloseHandle(g_startup_watcher_thread);
         g_startup_watcher_thread = NULL;
+    }
+    if (g_explorer_cleanup_thread) {
+        WaitForSingleObject(g_explorer_cleanup_thread, 3000);
+        CloseHandle(g_explorer_cleanup_thread);
+        g_explorer_cleanup_thread = NULL;
     }
     g_hook_dll = NULL;
     g_call_proc = NULL;
@@ -1330,11 +1407,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.90.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.90.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.90.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.90.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.90.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.92.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.92.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.92.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.92.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.92.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {

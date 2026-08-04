@@ -94,6 +94,19 @@ static int is_google_drive_atl_window(HWND hwnd) {
     return match;
 }
 
+static int is_google_drive_duplicate_window(HWND hwnd) {
+    char class_name[256];
+    char window_text[256];
+
+    if (!is_google_drive_atl_window(hwnd) ||
+        !GetClassNameA(hwnd, class_name, (int)sizeof(class_name)) ||
+        strncmp(class_name, "ATL:", 4) != 0) {
+        return 0;
+    }
+    GetWindowTextA(hwnd, window_text, (int)sizeof(window_text));
+    return window_text[0] == '\0' || strstr(class_name, "C9B0") != NULL;
+}
+
 static BOOL WINAPI hooked_shell_notify_icon_a(DWORD message, PNOTIFYICONDATAA data) {
     if (data && (message == NIM_ADD || message == NIM_MODIFY || message == NIM_SETVERSION)) {
         if (is_explorer_atl_window(data->hWnd) &&
@@ -105,7 +118,8 @@ static BOOL WINAPI hooked_shell_notify_icon_a(DWORD message, PNOTIFYICONDATAA da
                 if (!same_guid(&data->guidItem, &kGoogleDrivePreservedGuid)) {
                     return TRUE;
                 }
-            } else if (data->uID == 11376) {
+            } else if (data->uID == 11376 &&
+                       is_google_drive_duplicate_window(data->hWnd)) {
                 return TRUE;
             }
         }

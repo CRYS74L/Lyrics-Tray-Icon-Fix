@@ -38,7 +38,6 @@ static const GuidRule kGuidRules[] = {
 static const BlockUidRule kBlockUidRules[] = {
     { L"EXPLORER.EXE", L"ATL:", 100, 0 },
     { L"EXPLORER.EXE", L"ATL:", 101, 0 },
-    { L"GOOGLEDRIVEFS.EXE", L"ATL:", 11376, 0 },
 };
 
 static const WindowRule kWindowRules[] = {
