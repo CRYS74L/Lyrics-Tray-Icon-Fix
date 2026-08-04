@@ -1,4 +1,4 @@
-﻿#define WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
@@ -80,15 +80,12 @@ static HANDLE g_message_event_thread_handle = NULL;
 
 #define LYRICIFY_CLEANUP_MS 10000
 #define LYRICIFY_CLEANUP_INTERVAL_MS 200
-#define GOOGLE_CLEANUP_EVENT_NAME L"Local\\LyricsTrayIconFixGoogleCleanup"
 static HWND g_lyricify_cleanup_hwnd = NULL;
 static volatile LONG g_lyricify_cleanup_started = 0;
 static HANDLE g_lyricify_cleanup_stop_event = NULL;
 static HANDLE g_lyricify_cleanup_thread = NULL;
 
 static void install_shell_notify_iat_hook(void);
-static int uid_icon_exists(HWND hwnd, unsigned int uid);
-static void delete_uid_icon(HWND hwnd, unsigned int uid);
 static void install_shell_notify_iat_hook_a(void);
 static void inspect_window(HWND hwnd);
 
@@ -307,7 +304,6 @@ static BOOL CALLBACK google_drive_cleanup_proc(HWND hwnd, LPARAM lparam) {
     DWORD pid = 0;
     DWORD current_pid = (DWORD)lparam;
     wchar_t class_name[256];
-    unsigned int uid = 0;
 
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid != current_pid) {
@@ -318,58 +314,14 @@ static BOOL CALLBACK google_drive_cleanup_proc(HWND hwnd, LPARAM lparam) {
     }
     if (wcscmp(class_name, L"DriveDot") == 0) {
         ShowWindow(hwnd, SW_HIDE);
-        return TRUE;
-    }
-    if (tray_rule_block_uid_for_window_class(g_process_name, class_name, &uid)) {
-        if (uid_icon_exists(hwnd, uid)) {
-            delete_uid_icon(hwnd, uid);
-        }
     }
     return TRUE;
 }
 
-static void cleanup_google_drive_icons(void) {
-    HANDLE snapshot;
-    THREADENTRY32 entry;
-    DWORD current_pid = GetCurrentProcessId();
-
-    snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (snapshot != INVALID_HANDLE_VALUE) {
-        entry.dwSize = sizeof(entry);
-        if (Thread32First(snapshot, &entry)) {
-            do {
-                if (entry.th32OwnerProcessID == current_pid) {
-                    EnumThreadWindows(entry.th32ThreadID, google_drive_cleanup_proc,
-                                      (LPARAM)current_pid);
-                }
-            } while (Thread32Next(snapshot, &entry));
-        }
-        CloseHandle(snapshot);
-    }
-    EnumWindows(google_drive_cleanup_proc, (LPARAM)current_pid);
-}
-
 static DWORD WINAPI google_drive_cleanup_thread(LPVOID param) {
-    HANDLE cleanup_event;
-
     (void)param;
     Sleep(300);
-    cleanup_google_drive_icons();
-    cleanup_event = OpenEventW(
-        EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, GOOGLE_CLEANUP_EVENT_NAME);
-    if (cleanup_event) {
-        while (WaitForSingleObject(cleanup_event, INFINITE) == WAIT_OBJECT_0) {
-            cleanup_google_drive_icons();
-            Sleep(2000);
-            cleanup_google_drive_icons();
-            Sleep(3000);
-            cleanup_google_drive_icons();
-            Sleep(5000);
-            cleanup_google_drive_icons();
-            ResetEvent(cleanup_event);
-        }
-        CloseHandle(cleanup_event);
-    }
+    EnumWindows(google_drive_cleanup_proc, (LPARAM)GetCurrentProcessId());
     return 0;
 }
 
