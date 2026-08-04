@@ -9,12 +9,12 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.81"
+#define TOOL_VERSION L"v0.82"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.81.dll"
-#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.81.exe"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.82.dll"
+#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.82.exe"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
@@ -734,6 +734,64 @@ static void ensure_ps_tray_factory_rule(const wchar_t *exe_name, const wchar_t *
     RegCloseKey(root);
 }
 
+static void cleanup_stale_google_drive_ps_rules(void) {
+    HKEY root;
+    int removed;
+
+    if (RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            L"Software\\PS Soft Lab\\PS Tray Factory\\TrayIconManager\\AutoHideFiles",
+            0, KEY_READ | KEY_WRITE, &root) != ERROR_SUCCESS) {
+        return;
+    }
+
+    do {
+        removed = 0;
+        for (DWORD index = 0; ; ++index) {
+            wchar_t subkey[64];
+            DWORD subkey_size = (DWORD)(sizeof(subkey) / sizeof(subkey[0]));
+            FILETIME last_written;
+            HKEY item;
+            wchar_t exe_name[64] = { 0 };
+            DWORD exe_size = sizeof(exe_name);
+            DWORD type = 0;
+            DWORD uid = 0;
+            DWORD uid_size = sizeof(uid);
+            LONG enum_result = RegEnumKeyExW(
+                root, index, subkey, &subkey_size, NULL, NULL, NULL, &last_written);
+            int stale = 0;
+
+            if (enum_result == ERROR_NO_MORE_ITEMS) {
+                break;
+            }
+            if (enum_result != ERROR_SUCCESS) {
+                continue;
+            }
+            if (RegOpenKeyExW(root, subkey, 0, KEY_READ, &item) != ERROR_SUCCESS) {
+                continue;
+            }
+            if (RegQueryValueExW(item, L"ExeName", NULL, &type,
+                                 (LPBYTE)exe_name, &exe_size) == ERROR_SUCCESS &&
+                type == REG_SZ &&
+                _wcsicmp(exe_name, L"GOOGLEDRIVEFS.EXE") == 0 &&
+                RegQueryValueExW(item, L"UID", NULL, &type,
+                                 (LPBYTE)&uid, &uid_size) == ERROR_SUCCESS &&
+                type == REG_DWORD &&
+                uid == 11376) {
+                stale = 1;
+            }
+            RegCloseKey(item);
+            if (stale) {
+                RegDeleteKeyW(root, subkey);
+                removed = 1;
+                break;
+            }
+        }
+    } while (removed);
+
+    RegCloseKey(root);
+}
+
 static BOOL CALLBACK scan_current_windows_proc(HWND hwnd, LPARAM lparam) {
     CurrentScanContext *ctx = (CurrentScanContext *)lparam;
     DWORD pid = 0;
@@ -1053,6 +1111,7 @@ static int command_start(void) {
     }
     ResetEvent(stop_event);
     g_shutdown_stop_event = stop_event;
+    cleanup_stale_google_drive_ps_rules();
 
     wchar_t dir[MAX_PATH];
     wchar_t dll_path[MAX_PATH];
@@ -1238,11 +1297,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.81.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.81.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.81.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.81.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.81.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.82.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.82.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.82.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.82.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.82.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {
