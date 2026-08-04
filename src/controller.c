@@ -9,12 +9,12 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.64"
+#define TOOL_VERSION L"v0.65"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.64.dll"
-#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.64.exe"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.65.dll"
+#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.65.exe"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
@@ -52,6 +52,8 @@ static ThreadHook g_target_thread_hooks[MAX_TARGET_THREAD_HOOKS];
 static int g_target_thread_hook_count = 0;
 static DWORD g_known_target_pids[MAX_KNOWN_TARGET_PIDS];
 static int g_known_target_pid_count = 0;
+static HANDLE g_shutdown_stop_event = NULL;
+static volatile LONG g_shutdown_requested = 0;
 
 static void write_utf8(HANDLE handle, const wchar_t *format, ...) {
     wchar_t wide[2048];
@@ -339,6 +341,48 @@ static void remove_finished_target_hooks(void) {
     }
 }
 
+static void write_watchdog_stop_marker(void) {
+    wchar_t dir[MAX_PATH];
+    wchar_t marker[MAX_PATH];
+    HANDLE file;
+    DWORD written = 0;
+    static const char content[] = "shutdown\n";
+
+    exe_directory(dir, MAX_PATH);
+    _snwprintf(marker, MAX_PATH - 1, L"%ls\\watchdog-stop.txt", dir);
+    marker[MAX_PATH - 1] = L'\0';
+    file = CreateFileW(marker, GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file != INVALID_HANDLE_VALUE) {
+        WriteFile(file, content, (DWORD)(sizeof(content) - 1), &written, NULL);
+        CloseHandle(file);
+    }
+}
+
+static int system_shutting_down(void) {
+    if (InterlockedCompareExchange(&g_shutdown_requested, 0, 0)) {
+        return 1;
+    }
+    if (GetSystemMetrics(SM_SHUTTINGDOWN)) {
+        InterlockedExchange(&g_shutdown_requested, 1);
+        write_watchdog_stop_marker();
+        return 1;
+    }
+    return 0;
+}
+
+static BOOL WINAPI console_ctrl_handler(DWORD type) {
+    if (type == CTRL_LOGOFF_EVENT || type == CTRL_SHUTDOWN_EVENT) {
+        InterlockedExchange(&g_shutdown_requested, 1);
+        write_watchdog_stop_marker();
+        if (g_shutdown_stop_event) {
+            SetEvent(g_shutdown_stop_event);
+        }
+        return FALSE;
+    }
+    return FALSE;
+}
+
 static void remove_all_target_hooks(void) {
     while (g_target_thread_hook_count > 0) {
         remove_target_hook_at(g_target_thread_hook_count - 1);
@@ -558,14 +602,23 @@ static int install_target_thread_hooks(void) {
 }
 
 static int command_recover(DWORD old_explorer_pid) {
+    if (system_shutting_down()) {
+        return 1;
+    }
     for (int i = 0; i < 3000; ++i) {
         DWORD new_pid = 0;
         HANDLE process = open_shell_process(&new_pid);
         if (process) {
             CloseHandle(process);
             if (new_pid && new_pid != old_explorer_pid) {
+                if (system_shutting_down()) {
+                    return 1;
+                }
                 return launch_self_command(L"start") ? 0 : 1;
             }
+        }
+        if ((i % 25) == 0 && system_shutting_down()) {
+            return 1;
         }
         Sleep(20);
     }
@@ -584,6 +637,9 @@ static HANDLE wait_for_new_shell_process(DWORD old_explorer_pid, DWORD *pid_out)
                 return process;
             }
             CloseHandle(process);
+        }
+        if (system_shutting_down()) {
+            return NULL;
         }
         Sleep(20);
     }
@@ -968,6 +1024,11 @@ static int command_stop(void) {
 static int command_start(void) {
     int restart_after_shell = 0;
     DWORD explorer_pid = 0;
+
+    if (system_shutting_down()) {
+        return 1;
+    }
+
     HANDLE mutex = CreateMutexW(NULL, FALSE, MUTEX_NAME);
     if (!mutex) {
         err(L"Cannot create mutex: %lu\n", GetLastError());
@@ -991,6 +1052,7 @@ static int command_start(void) {
         return 1;
     }
     ResetEvent(stop_event);
+    g_shutdown_stop_event = stop_event;
 
     wchar_t dir[MAX_PATH];
     wchar_t dll_path[MAX_PATH];
@@ -1007,6 +1069,7 @@ static int command_start(void) {
     if (!sync_thread) {
         err(L"Cannot create worker thread: %lu\n", GetLastError());
         CloseHandle(sync_event);
+        g_shutdown_stop_event = NULL;
         CloseHandle(stop_event);
         CloseHandle(mutex);
         return 1;
@@ -1019,6 +1082,7 @@ static int command_start(void) {
         WaitForSingleObject(sync_thread, 3000);
         CloseHandle(sync_thread);
         CloseHandle(sync_event);
+        g_shutdown_stop_event = NULL;
         CloseHandle(stop_event);
         CloseHandle(mutex);
         return 1;
@@ -1033,6 +1097,7 @@ static int command_start(void) {
         WaitForSingleObject(sync_thread, 3000);
         CloseHandle(sync_thread);
         CloseHandle(sync_event);
+        g_shutdown_stop_event = NULL;
         CloseHandle(stop_event);
         CloseHandle(mutex);
         return 1;
@@ -1049,6 +1114,7 @@ static int command_start(void) {
         WaitForSingleObject(sync_thread, 3000);
         CloseHandle(sync_thread);
         CloseHandle(sync_event);
+        g_shutdown_stop_event = NULL;
         CloseHandle(stop_event);
         CloseHandle(mutex);
         return 1;
@@ -1064,6 +1130,7 @@ static int command_start(void) {
         WaitForSingleObject(sync_thread, 3000);
         CloseHandle(sync_thread);
         CloseHandle(sync_event);
+        g_shutdown_stop_event = NULL;
         CloseHandle(stop_event);
         CloseHandle(mutex);
         return 1;
@@ -1106,9 +1173,15 @@ static int command_start(void) {
                 ResetEvent(explorer_watch_ready);
             }
 
+            if (system_shutting_down()) {
+                CloseHandle(explorer_process);
+                explorer_process = NULL;
+                explorer_pid = 0;
+                break;
+            }
             explorer_process = wait_for_new_shell_process(old_explorer_pid, &explorer_pid);
             if (!explorer_process) {
-                restart_after_shell = 1;
+                restart_after_shell = system_shutting_down() ? 0 : 1;
                 explorer_pid = old_explorer_pid;
                 break;
             }
@@ -1148,6 +1221,7 @@ static int command_start(void) {
     WaitForSingleObject(sync_thread, 3000);
     CloseHandle(sync_thread);
     CloseHandle(sync_event);
+    g_shutdown_stop_event = NULL;
     CloseHandle(stop_event);
     CloseHandle(mutex);
     if (restart_after_shell) {
@@ -1164,15 +1238,16 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.64.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.64.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.64.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.64.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.64.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.65.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.65.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.65.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.65.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.65.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {
     SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
     if (argc < 2) {
         usage();
         return 0;
