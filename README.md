@@ -2,9 +2,9 @@
 
 这是一个为个人用途编写的 Windows 托盘图标修复工具，用来隐藏 BetterLyrics、Lyricify Lite、Windows 音频、Windows 麦克风隐私指示器以及 Google Drive 相关托盘中错误或不需要显示的特定图标。
 
-当前版本：`v0.63`。
+当前版本：`v0.64`。
 
-v0.63 修复 v0.62 中 Explorer 多模块 Hook 误改延迟导入导致的潜在崩溃：现在只对普通导入做全模块拦截，延迟导入仅补丁 `stobject.dll`，并增加窗口句柄有效性检查。
+v0.64 在 Explorer 中直接内联拦截 `shell32!Shell_NotifyIconW/A` 函数入口，不再依赖模块导入表或延迟导入，确保麦克风/音频图标无论由哪个模块创建都能被拦截，同时避免 v0.62/v0.63 的导入表崩溃风险。
 
 ## 用途
 

@@ -63,6 +63,13 @@ static ShellHookW g_shell_hook_w[MAX_SHELL_HOOK_SLOTS];
 static ShellHookA g_shell_hook_a[MAX_SHELL_HOOK_SLOTS];
 static int g_shell_hook_w_count = 0;
 static int g_shell_hook_a_count = 0;
+static BYTE *g_inline_w_trampoline = NULL;
+static BYTE *g_inline_a_trampoline = NULL;
+static BYTE *g_inline_w_target = NULL;
+static BYTE *g_inline_a_target = NULL;
+static BYTE g_inline_w_original[14];
+static BYTE g_inline_a_original[14];
+static int g_inline_hooked = 0;
 static HWINEVENTHOOK g_google_event_hook = NULL;
 static DWORD g_google_event_thread_id = 0;
 static HANDLE g_google_event_thread_handle = NULL;
@@ -562,6 +569,76 @@ static void restore_shell_notify_iat_hook(void) {
     InterlockedExchange(&g_install_state, 0);
 }
 
+static int install_inline_shell_hook(BYTE *target, BYTE **trampoline_out, BYTE *original,
+                                     void *hook) {
+    BYTE *trampoline;
+    DWORD old_protect = 0;
+    BYTE *return_address;
+    BYTE *hook_address;
+
+    if (!target || !trampoline_out || *trampoline_out || !hook) {
+        return 0;
+    }
+    trampoline = (BYTE *)VirtualAlloc(NULL, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!trampoline) {
+        return 0;
+    }
+    memcpy(trampoline, target, 14);
+    trampoline[14] = 0xFF;
+    trampoline[15] = 0x25;
+    trampoline[16] = 0;
+    trampoline[17] = 0;
+    trampoline[18] = 0;
+    trampoline[19] = 0;
+    return_address = target + 14;
+    memcpy(trampoline + 20, &return_address, sizeof(return_address));
+
+    if (!VirtualProtect(target, 14, PAGE_EXECUTE_READWRITE, &old_protect)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return 0;
+    }
+    memcpy(original, target, 14);
+    target[0] = 0xFF;
+    target[1] = 0x25;
+    target[2] = 0;
+    target[3] = 0;
+    target[4] = 0;
+    target[5] = 0;
+    hook_address = (BYTE *)hook;
+    memcpy(target + 6, &hook_address, sizeof(hook_address));
+    VirtualProtect(target, 14, old_protect, &old_protect);
+    FlushInstructionCache(GetCurrentProcess(), target, 14);
+
+    *trampoline_out = trampoline;
+    return 1;
+}
+
+static void restore_inline_shell_hooks(void) {
+    DWORD old_protect = 0;
+
+    if (g_inline_w_target && g_inline_w_trampoline) {
+        if (VirtualProtect(g_inline_w_target, 14, PAGE_EXECUTE_READWRITE, &old_protect)) {
+            memcpy(g_inline_w_target, g_inline_w_original, 14);
+            VirtualProtect(g_inline_w_target, 14, old_protect, &old_protect);
+            FlushInstructionCache(GetCurrentProcess(), g_inline_w_target, 14);
+        }
+        VirtualFree(g_inline_w_trampoline, 0, MEM_RELEASE);
+        g_inline_w_trampoline = NULL;
+        g_inline_w_target = NULL;
+    }
+    if (g_inline_a_target && g_inline_a_trampoline) {
+        if (VirtualProtect(g_inline_a_target, 14, PAGE_EXECUTE_READWRITE, &old_protect)) {
+            memcpy(g_inline_a_target, g_inline_a_original, 14);
+            VirtualProtect(g_inline_a_target, 14, old_protect, &old_protect);
+            FlushInstructionCache(GetCurrentProcess(), g_inline_a_target, 14);
+        }
+        VirtualFree(g_inline_a_trampoline, 0, MEM_RELEASE);
+        g_inline_a_trampoline = NULL;
+        g_inline_a_target = NULL;
+    }
+    g_inline_hooked = 0;
+}
+
 static int is_our_hook_module(HMODULE module) {
     wchar_t module_path[MAX_PATH];
     const wchar_t *name;
@@ -706,17 +783,21 @@ static void install_shell_notify_iat_hook(void) {
     }
 
     if (_wcsicmp(g_process_name, L"explorer.exe") == 0) {
-        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
-        MODULEENTRY32W entry;
-        if (snapshot != INVALID_HANDLE_VALUE) {
-            ZeroMemory(&entry, sizeof(entry));
-            entry.dwSize = sizeof(entry);
-            if (Module32FirstW(snapshot, &entry)) {
-                do {
-                    scan_module_shell_imports((HMODULE)entry.modBaseAddr, original_w, original_a);
-                } while (Module32NextW(snapshot, &entry));
-            }
-            CloseHandle(snapshot);
+        g_next_shell_notify_icon_w = (ShellNotifyIconWFn)original_w;
+        g_next_shell_notify_icon_a = (ShellNotifyIconAFn)original_a;
+        if (install_inline_shell_hook((BYTE *)original_w, &g_inline_w_trampoline,
+                                      g_inline_w_original, hooked_shell_notify_icon_w)) {
+            g_inline_w_target = (BYTE *)original_w;
+            g_next_shell_notify_icon_w = (ShellNotifyIconWFn)g_inline_w_trampoline;
+            g_shell_notify_iat_hooked = 1;
+            g_inline_hooked = 1;
+        }
+        if (install_inline_shell_hook((BYTE *)original_a, &g_inline_a_trampoline,
+                                      g_inline_a_original, hooked_shell_notify_icon_a)) {
+            g_inline_a_target = (BYTE *)original_a;
+            g_next_shell_notify_icon_a = (ShellNotifyIconAFn)g_inline_a_trampoline;
+            g_shell_notify_iat_hooked = 1;
+            g_inline_hooked = 1;
         }
     } else {
         scan_module_shell_imports(GetModuleHandleW(NULL), original_w, original_a);
@@ -909,6 +990,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
             }
         }
     } else if (reason == DLL_PROCESS_DETACH && reserved == NULL) {
+        restore_inline_shell_hooks();
         restore_shell_notify_iat_hook();
         if (g_shell_notify_ready_event) {
             CloseHandle(g_shell_notify_ready_event);
