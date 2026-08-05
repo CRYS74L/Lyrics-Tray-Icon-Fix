@@ -9,11 +9,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.93"
+#define TOOL_VERSION L"v0.94"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.93.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.94.dll"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
@@ -23,6 +23,7 @@
 #define STARTUP_WATCH_INTERVAL_MS 50
 #define EXPLORER_CLEANUP_MS 60000
 #define EXPLORER_CLEANUP_INTERVAL_MS 200
+#define MAX_GD_WATCH_PROCESSES 16
 
 typedef struct SyncWorkerContext {
     HANDLE stop_event;
@@ -59,6 +60,9 @@ static HANDLE g_shutdown_stop_event = NULL;
 static volatile LONG g_shutdown_requested = 0;
 static HANDLE g_startup_watcher_thread = NULL;
 static HANDLE g_explorer_cleanup_thread = NULL;
+static HANDLE g_google_drive_watcher_thread = NULL;
+static HANDLE g_google_drive_appeared_event = NULL;
+static HANDLE g_service_stop_event = NULL;
 
 static int event_is_signaled(const wchar_t *name);
 static CurrentScanContext sync_current_windows(void);
@@ -547,6 +551,7 @@ static void hook_existing_target_processes(void) {
 static void hook_target_window(HWND hwnd) {
     DWORD pid = 0;
     DWORD thread_id;
+    wchar_t process_name[MAX_PATH];
 
     if (!hwnd) {
         return;
@@ -558,6 +563,11 @@ static void hook_target_window(HWND hwnd) {
     if (known_target_pid(pid) || pid_is_target_process(pid)) {
         add_known_target_pid(pid);
         hook_target_process_threads(pid);
+        if (g_google_drive_appeared_event &&
+            get_process_base_name(pid, process_name, MAX_PATH) &&
+            _wcsicmp(process_name, L"GoogleDriveFS.exe") == 0) {
+            SetEvent(g_google_drive_appeared_event);
+        }
     }
 }
 
@@ -930,6 +940,99 @@ static DWORD WINAPI explorer_restart_cleanup_thread(LPVOID param) {
     return 0;
 }
 
+static void start_duplicate_cleanup_thread(void) {
+    if (g_explorer_cleanup_thread) {
+        WaitForSingleObject(g_explorer_cleanup_thread, 1000);
+        CloseHandle(g_explorer_cleanup_thread);
+        g_explorer_cleanup_thread = NULL;
+    }
+    g_explorer_cleanup_thread = CreateThread(
+        NULL, 0, explorer_restart_cleanup_thread, g_service_stop_event, 0, NULL);
+}
+
+static DWORD WINAPI google_drive_watcher_thread(LPVOID param) {
+    (void)param;
+    for (;;) {
+        HANDLE process_handles[MAX_GD_WATCH_PROCESSES];
+        int process_count = 0;
+        HANDLE snapshot;
+        PROCESSENTRY32W entry;
+
+        if (g_service_stop_event &&
+            WaitForSingleObject(g_service_stop_event, 0) == WAIT_OBJECT_0) {
+            break;
+        }
+
+        snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot != INVALID_HANDLE_VALUE) {
+            ZeroMemory(&entry, sizeof(entry));
+            entry.dwSize = sizeof(entry);
+            if (Process32FirstW(snapshot, &entry)) {
+                do {
+                    HANDLE process;
+                    if (_wcsicmp(entry.szExeFile, L"GoogleDriveFS.exe") != 0) {
+                        continue;
+                    }
+                    process = OpenProcess(SYNCHRONIZE, FALSE, entry.th32ProcessID);
+                    if (process) {
+                        if (process_count < MAX_GD_WATCH_PROCESSES) {
+                            process_handles[process_count++] = process;
+                        } else {
+                            CloseHandle(process);
+                        }
+                    }
+                } while (Process32NextW(snapshot, &entry));
+            }
+            CloseHandle(snapshot);
+        }
+
+        if (process_count == 0) {
+            HANDLE wait_handles[2];
+            DWORD wait;
+
+            wait_handles[0] = g_service_stop_event;
+            wait_handles[1] = g_google_drive_appeared_event;
+            wait = WaitForMultipleObjects(2, wait_handles, FALSE, INFINITE);
+            if (wait == WAIT_OBJECT_0) {
+                break;
+            }
+            if (wait == WAIT_OBJECT_0 + 1 && g_google_drive_appeared_event) {
+                ResetEvent(g_google_drive_appeared_event);
+            }
+            continue;
+        }
+
+        {
+            HANDLE wait_handles[MAX_GD_WATCH_PROCESSES + 2];
+            DWORD wait;
+
+            wait_handles[0] = g_service_stop_event;
+            wait_handles[1] = g_google_drive_appeared_event;
+            for (int i = 0; i < process_count; ++i) {
+                wait_handles[i + 2] = process_handles[i];
+            }
+            wait = WaitForMultipleObjects(process_count + 2, wait_handles,
+                                          FALSE, INFINITE);
+            if (wait == WAIT_OBJECT_0) {
+                for (int i = 0; i < process_count; ++i) {
+                    CloseHandle(process_handles[i]);
+                }
+                break;
+            }
+            if (wait == WAIT_OBJECT_0 + 1 && g_google_drive_appeared_event) {
+                ResetEvent(g_google_drive_appeared_event);
+            }
+            if (wait != WAIT_OBJECT_0 && wait != WAIT_OBJECT_0 + 1) {
+                start_duplicate_cleanup_thread();
+            }
+            for (int i = 0; i < process_count; ++i) {
+                CloseHandle(process_handles[i]);
+            }
+        }
+    }
+    return 0;
+}
+
 static void process_sync_line(wchar_t *line, int *changed) {
     wchar_t *exe = line;
     wchar_t *class_name = wcschr(line, L'|');
@@ -1174,6 +1277,8 @@ static int command_start(void) {
     }
     ResetEvent(stop_event);
     g_shutdown_stop_event = stop_event;
+    g_service_stop_event = stop_event;
+    g_google_drive_appeared_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     cleanup_stale_google_drive_ps_rules();
 
     wchar_t dir[MAX_PATH];
@@ -1234,6 +1339,8 @@ static int command_start(void) {
     install_target_thread_hooks();
     g_startup_watcher_thread = CreateThread(
         NULL, 0, startup_target_watcher, stop_event, 0, NULL);
+    g_google_drive_watcher_thread = CreateThread(
+        NULL, 0, google_drive_watcher_thread, NULL, 0, NULL);
 
     HANDLE explorer_process = open_shell_process(&explorer_pid);
     HANDLE explorer_watch_ready = CreateEventW(
@@ -1285,13 +1392,7 @@ static int command_start(void) {
             }
             hook_target_process_threads(explorer_pid);
             hook_existing_target_processes();
-            if (g_explorer_cleanup_thread) {
-                WaitForSingleObject(g_explorer_cleanup_thread, 1000);
-                CloseHandle(g_explorer_cleanup_thread);
-                g_explorer_cleanup_thread = NULL;
-            }
-            g_explorer_cleanup_thread = CreateThread(
-                NULL, 0, explorer_restart_cleanup_thread, stop_event, 0, NULL);
+            start_duplicate_cleanup_thread();
             continue;
         }
         if (wait == WAIT_OBJECT_0 + handle_count) {
@@ -1322,6 +1423,15 @@ static int command_start(void) {
         CloseHandle(g_explorer_cleanup_thread);
         g_explorer_cleanup_thread = NULL;
     }
+    if (g_google_drive_watcher_thread) {
+        WaitForSingleObject(g_google_drive_watcher_thread, 3000);
+        CloseHandle(g_google_drive_watcher_thread);
+        g_google_drive_watcher_thread = NULL;
+    }
+    if (g_google_drive_appeared_event) {
+        CloseHandle(g_google_drive_appeared_event);
+        g_google_drive_appeared_event = NULL;
+    }
     g_hook_dll = NULL;
     g_call_proc = NULL;
     g_msg_proc = NULL;
@@ -1332,6 +1442,7 @@ static int command_start(void) {
     CloseHandle(sync_thread);
     CloseHandle(sync_event);
     g_shutdown_stop_event = NULL;
+    g_service_stop_event = NULL;
     CloseHandle(stop_event);
     CloseHandle(mutex);
     if (restart_after_shell) {
@@ -1348,11 +1459,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.93.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.93.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.93.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.93.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.93.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.94.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.94.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.94.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.94.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.94.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {
