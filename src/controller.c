@@ -9,12 +9,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.92"
+#define TOOL_VERSION L"v0.93"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.92.dll"
-#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.92.exe"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.93.dll"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
@@ -22,8 +21,8 @@
 #define EXPLORER_WATCH_READY_EVENT_NAME L"Local\\LyricsTrayIconFixExplorerWatchReady"
 #define STARTUP_WATCH_MS 15000
 #define STARTUP_WATCH_INTERVAL_MS 50
-#define EXPLORER_CLEANUP_MS 30000
-#define EXPLORER_CLEANUP_INTERVAL_MS 100
+#define EXPLORER_CLEANUP_MS 60000
+#define EXPLORER_CLEANUP_INTERVAL_MS 200
 
 typedef struct SyncWorkerContext {
     HANDLE stop_event;
@@ -124,33 +123,6 @@ static void exe_directory(wchar_t *buffer, DWORD count) {
             return;
         }
     }
-}
-
-static HANDLE launch_pstf_helper(const wchar_t *directory) {
-    wchar_t helper_path[MAX_PATH];
-    STARTUPINFOW startup;
-    PROCESS_INFORMATION process;
-
-    _snwprintf(helper_path, MAX_PATH - 1, L"%ls\\%ls", directory, PSTF_HELPER_NAME);
-    helper_path[MAX_PATH - 1] = L'\0';
-    ZeroMemory(&startup, sizeof(startup));
-    ZeroMemory(&process, sizeof(process));
-    startup.cb = sizeof(startup);
-
-    if (!CreateProcessW(helper_path, NULL, NULL, NULL, FALSE, CREATE_NO_WINDOW,
-                        NULL, directory, &startup, &process)) {
-        return NULL;
-    }
-    CloseHandle(process.hThread);
-    return process.hProcess;
-}
-
-static void wait_and_close_helper(HANDLE process) {
-    if (!process) {
-        return;
-    }
-    WaitForSingleObject(process, 3000);
-    CloseHandle(process);
 }
 
 static int get_process_base_name(DWORD pid, wchar_t *buffer, DWORD count) {
@@ -1225,34 +1197,6 @@ static int command_start(void) {
         return 1;
     }
 
-    HANDLE pstf_helper = launch_pstf_helper(dir);
-    if (!pstf_helper) {
-        err(L"Cannot start %ls: %lu\n", PSTF_HELPER_NAME, GetLastError());
-        SetEvent(stop_event);
-        WaitForSingleObject(sync_thread, 3000);
-        CloseHandle(sync_thread);
-        CloseHandle(sync_event);
-        g_shutdown_stop_event = NULL;
-        CloseHandle(stop_event);
-        CloseHandle(mutex);
-        return 1;
-    }
-    Sleep(100);
-    if (WaitForSingleObject(pstf_helper, 0) == WAIT_OBJECT_0) {
-        DWORD exit_code = 0;
-        GetExitCodeProcess(pstf_helper, &exit_code);
-        err(L"%ls exited during startup: %lu\n", PSTF_HELPER_NAME, exit_code);
-        CloseHandle(pstf_helper);
-        SetEvent(stop_event);
-        WaitForSingleObject(sync_thread, 3000);
-        CloseHandle(sync_thread);
-        CloseHandle(sync_event);
-        g_shutdown_stop_event = NULL;
-        CloseHandle(stop_event);
-        CloseHandle(mutex);
-        return 1;
-    }
-
     _snwprintf(dll_path, MAX_PATH - 1, L"%ls\\%ls", dir, DLL_NAME);
     dll_path[MAX_PATH - 1] = L'\0';
 
@@ -1260,7 +1204,6 @@ static int command_start(void) {
     if (!dll) {
         err(L"Cannot load %ls: %lu\n", dll_path, GetLastError());
         SetEvent(stop_event);
-        wait_and_close_helper(pstf_helper);
         WaitForSingleObject(sync_thread, 3000);
         CloseHandle(sync_thread);
         CloseHandle(sync_event);
@@ -1276,7 +1219,6 @@ static int command_start(void) {
         err(L"DLL exports missing\n");
         FreeLibrary(dll);
         SetEvent(stop_event);
-        wait_and_close_helper(pstf_helper);
         WaitForSingleObject(sync_thread, 3000);
         CloseHandle(sync_thread);
         CloseHandle(sync_event);
@@ -1386,7 +1328,6 @@ static int command_start(void) {
     FreeLibrary(dll);
     if (explorer_watch_ready) CloseHandle(explorer_watch_ready);
     if (explorer_process) CloseHandle(explorer_process);
-    wait_and_close_helper(pstf_helper);
     WaitForSingleObject(sync_thread, 3000);
     CloseHandle(sync_thread);
     CloseHandle(sync_event);
@@ -1407,11 +1348,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.92.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.92.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.92.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.92.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.92.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.93.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.93.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.93.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.93.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.93.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {
