@@ -1,7 +1,7 @@
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
-exe = root & "\bin\Lyrics Tray Icon Fix v0.108.exe"
+exe = root & "\bin\Lyrics Tray Icon Fix v0.109.exe"
 bin = root & "\bin"
 marker = root & "\watchdog-stop.txt"
 
@@ -20,7 +20,12 @@ oldFiles = Array( _
   "bin\Lyrics Tray Icon Fix PS Restore Hook v0.107.dll", _
   "bin\Lyrics Tray Icon Fix PS Restore Helper v0.107.exe", _
   "bin\Lyrics Tray Icon Fix v0.107.exe", _
-  "bin\Lyrics Tray Icon Fix Copy v0.107.exe")
+  "bin\Lyrics Tray Icon Fix Copy v0.107.exe", _
+  "bin\Lyrics Tray Icon Fix Hook v0.108.dll", _
+  "bin\Lyrics Tray Icon Fix PS Restore Hook v0.108.dll", _
+  "bin\Lyrics Tray Icon Fix PS Restore Helper v0.108.exe", _
+  "bin\Lyrics Tray Icon Fix v0.108.exe", _
+  "bin\Lyrics Tray Icon Fix Copy v0.108.exe")
 For Each oldFile In oldFiles
   If fso.FileExists(root & "\" & oldFile) Then
     On Error Resume Next

@@ -254,6 +254,40 @@ static void delete_chatgpt_rule_guid_icon_if_exists(void) {
     }
 }
 
+static void hide_chatgpt_rule_guid_icon(const NOTIFYICONDATAW *data) {
+    NOTIFYICONDATAW state_data;
+
+    if (!data || !g_next_shell_notify_icon_w) {
+        return;
+    }
+    ZeroMemory(&state_data, sizeof(state_data));
+    state_data.cbSize = sizeof(state_data);
+    state_data.hWnd = data->hWnd;
+    state_data.uID = data->uID;
+    state_data.uFlags = NIF_GUID | NIF_STATE;
+    state_data.guidItem = data->guidItem;
+    state_data.dwState = NIS_HIDDEN;
+    state_data.dwStateMask = NIS_HIDDEN;
+    g_next_shell_notify_icon_w(NIM_MODIFY, &state_data);
+}
+
+static void hide_chatgpt_rule_guid_icon_a(const NOTIFYICONDATAA *data) {
+    NOTIFYICONDATAW wide_data;
+
+    if (!data) {
+        return;
+    }
+    ZeroMemory(&wide_data, sizeof(wide_data));
+    wide_data.cbSize = sizeof(wide_data);
+    wide_data.hWnd = data->hWnd;
+    wide_data.uID = data->uID;
+    wide_data.uFlags = NIF_GUID | NIF_STATE;
+    wide_data.guidItem = data->guidItem;
+    wide_data.dwState = NIS_HIDDEN;
+    wide_data.dwStateMask = NIS_HIDDEN;
+    hide_chatgpt_rule_guid_icon(&wide_data);
+}
+
 
 
 static int should_block_guid_notify(DWORD message, const NOTIFYICONDATAW *data) {
@@ -311,6 +345,8 @@ static BOOL WINAPI hooked_shell_notify_icon_w(DWORD message, PNOTIFYICONDATAW da
              message == NIM_SETVERSION)) {
             if (chatgpt_has_uid_icon()) {
                 g_next_shell_notify_icon_w(NIM_DELETE, data);
+            } else {
+                hide_chatgpt_rule_guid_icon(data);
             }
         }
         return result;
@@ -382,6 +418,8 @@ static BOOL WINAPI hooked_shell_notify_icon_a(DWORD message, PNOTIFYICONDATAA da
              message == NIM_SETVERSION)) {
             if (chatgpt_has_uid_icon()) {
                 g_next_shell_notify_icon_a(NIM_DELETE, data);
+            } else {
+                hide_chatgpt_rule_guid_icon_a(data);
             }
         }
         return result;
