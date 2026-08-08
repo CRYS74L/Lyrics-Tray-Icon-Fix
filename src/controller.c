@@ -9,11 +9,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.104"
+#define TOOL_VERSION L"v0.105"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.104.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.105.dll"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
@@ -282,11 +282,12 @@ static int known_target_pid(DWORD pid) {
     return 0;
 }
 
-static void add_known_target_pid(DWORD pid) {
+static int add_known_target_pid(DWORD pid) {
     if (known_target_pid(pid) || g_known_target_pid_count >= MAX_KNOWN_TARGET_PIDS) {
-        return;
+        return 0;
     }
     g_known_target_pids[g_known_target_pid_count++] = pid;
+    return 1;
 }
 
 static void remove_target_hook_at(int index) {
@@ -533,16 +534,17 @@ static void hook_existing_target_processes(void) {
     if (Process32FirstW(snapshot, &entry)) {
         do {
             DWORD candidate_session = 0;
-            int already_known;
             if (!tray_rule_process_is_target(entry.szExeFile) ||
                 !ProcessIdToSessionId(entry.th32ProcessID, &candidate_session) ||
                 candidate_session != current_session) {
                 continue;
             }
-            already_known = known_target_pid(entry.th32ProcessID);
-            add_known_target_pid(entry.th32ProcessID);
+            int newly_added = add_known_target_pid(entry.th32ProcessID);
             hook_target_process_threads(entry.th32ProcessID);
-            (void)already_known;
+            if (newly_added &&
+                _wcsicmp(entry.szExeFile, L"ChatGPT.exe") == 0) {
+                sync_current_windows();
+            }
         } while (Process32NextW(snapshot, &entry));
     }
     CloseHandle(snapshot);
@@ -561,8 +563,13 @@ static void hook_target_window(HWND hwnd) {
         return;
     }
     if (known_target_pid(pid) || pid_is_target_process(pid)) {
-        add_known_target_pid(pid);
+        int newly_added = add_known_target_pid(pid);
         hook_target_process_threads(pid);
+        if (newly_added &&
+            get_process_base_name(pid, process_name, MAX_PATH) &&
+            _wcsicmp(process_name, L"ChatGPT.exe") == 0) {
+            sync_current_windows();
+        }
         if (g_google_drive_appeared_event &&
             get_process_base_name(pid, process_name, MAX_PATH) &&
             _wcsicmp(process_name, L"GoogleDriveFS.exe") == 0) {
@@ -1492,11 +1499,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.104.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.104.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.104.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.104.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.104.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.105.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.105.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.105.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.105.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.105.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {
