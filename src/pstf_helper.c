@@ -5,8 +5,10 @@
 
 #define MAX_THREAD_HOOKS 32
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
-#define DLL_NAME L"Lyrics Tray Icon Fix PS Restore Hook v0.111.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix PS Restore Hook v0.112.dll"
 #define HOOK_INSTALLED_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
+#define PSTF_STARTUP_RETRY_MS 10000
+#define PSTF_STARTUP_RETRY_INTERVAL_MS 200
 
 typedef struct ThreadHook {
     DWORD pid;
@@ -19,6 +21,7 @@ typedef struct ThreadHook {
 static HMODULE g_dll = NULL;
 static HOOKPROC g_hook_proc = NULL;
 static HANDLE g_hook_installed_event = NULL;
+static DWORD g_pstf_pid = 0;
 static ThreadHook g_thread_hooks[MAX_THREAD_HOOKS];
 static int g_thread_hook_count = 0;
 
@@ -143,6 +146,25 @@ static void hook_pstf_threads(DWORD pid) {
     CloseHandle(snapshot);
 }
 
+static void CALLBACK pstf_win_event_proc(
+    HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG object_id, LONG child_id,
+    DWORD event_thread, DWORD event_time) {
+    DWORD pid = 0;
+
+    (void)hook;
+    (void)event;
+    (void)child_id;
+    (void)event_thread;
+    (void)event_time;
+    if (object_id != OBJID_WINDOW || !hwnd || !g_pstf_pid) {
+        return;
+    }
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == g_pstf_pid) {
+        hook_pstf_threads(pid);
+    }
+}
+
 static HANDLE find_pstf_process(DWORD *pid_out) {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     PROCESSENTRY32W entry;
@@ -235,8 +257,10 @@ int wmain(void) {
     HANDLE stop_event = OpenEventW(SYNCHRONIZE, FALSE, STOP_EVENT_NAME);
     HANDLE pstf_process = NULL;
     DWORD pstf_pid = 0;
+    HWINEVENTHOOK win_event = NULL;
     wchar_t directory[MAX_PATH];
     wchar_t dll_path[MAX_PATH];
+    ULONGLONG start;
 
     if (!stop_event) {
         return 2;
@@ -264,9 +288,21 @@ int wmain(void) {
 
     pstf_process = find_pstf_process(&pstf_pid);
     if (pstf_process) {
-        inject_dll_into_pstf(pstf_pid, dll_path);
-        hook_pstf_threads(pstf_pid);
+        g_pstf_pid = pstf_pid;
+        start = GetTickCount64();
+        while (g_thread_hook_count == 0 &&
+               GetTickCount64() - start < PSTF_STARTUP_RETRY_MS) {
+            inject_dll_into_pstf(pstf_pid, dll_path);
+            hook_pstf_threads(pstf_pid);
+            if (g_thread_hook_count > 0) {
+                break;
+            }
+            Sleep(PSTF_STARTUP_RETRY_INTERVAL_MS);
+        }
     }
+    win_event = SetWinEventHook(
+        EVENT_OBJECT_CREATE, EVENT_OBJECT_CREATE, NULL, pstf_win_event_proc,
+        0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
     for (;;) {
         DWORD wait;
@@ -287,6 +323,7 @@ int wmain(void) {
             CloseHandle(pstf_process);
             pstf_process = NULL;
             pstf_pid = 0;
+            g_pstf_pid = 0;
             for (int i = 0; i < 3000; ++i) {
                 DWORD new_pid = 0;
                 HANDLE process = find_pstf_process(&new_pid);
@@ -294,6 +331,7 @@ int wmain(void) {
                     if (new_pid && new_pid != old_pid) {
                         pstf_process = process;
                         pstf_pid = new_pid;
+                        g_pstf_pid = new_pid;
                         hook_pstf_threads(new_pid);
                         break;
                     }
@@ -303,7 +341,7 @@ int wmain(void) {
             }
             continue;
         }
-        if (wait == WAIT_OBJECT_0 + 1) {
+        if (wait == WAIT_OBJECT_0 + handle_count) {
             MSG message;
             while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE)) {
                 TranslateMessage(&message);
@@ -316,6 +354,9 @@ int wmain(void) {
 
     if (pstf_process) {
         CloseHandle(pstf_process);
+    }
+    if (win_event) {
+        UnhookWinEvent(win_event);
     }
     while (g_thread_hook_count > 0) {
         remove_hook_at(g_thread_hook_count - 1);
