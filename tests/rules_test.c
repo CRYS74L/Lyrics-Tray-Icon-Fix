@@ -100,7 +100,7 @@ int main(void) {
     failures += expect_message_hook(L"BetterLyrics.WinUI3.exe", 1, "betterlyrics keeps late cleanup hook");
     failures += expect_shell_block(L"explorer.exe", 1, "explorer creation block");
     failures += expect_shell_block(L"GoogleDriveFS.exe", 0, "google drive creation block is disabled");
-    failures += expect_shell_block(L"ChatGPT.exe", 0, "chatgpt no longer uses in-process shell hook");
+    failures += expect_shell_block(L"ChatGPT.exe", 1, "chatgpt uses in-process immediate cleanup hook");
     failures += expect_startup_cleanup(L"ChatGPT.exe", 1, "chatgpt uses bounded startup cleanup");
     failures += expect_startup_cleanup(L"Other.exe", 0, "other process no startup cleanup");
     failures += expect_shell_block(L"Other.exe", 0, "other process no creation block");

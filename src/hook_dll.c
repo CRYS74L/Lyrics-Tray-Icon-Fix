@@ -245,7 +245,15 @@ static BOOL WINAPI hooked_shell_notify_icon_w(DWORD message, PNOTIFYICONDATAW da
         return TRUE;
     }
     if (block_guid) {
-        return TRUE;
+        BOOL result = g_next_shell_notify_icon_w
+            ? g_next_shell_notify_icon_w(message, data)
+            : FALSE;
+        if (result &&
+            (message == NIM_ADD || message == NIM_MODIFY ||
+             message == NIM_SETVERSION)) {
+            g_next_shell_notify_icon_w(NIM_DELETE, data);
+        }
+        return result;
     }
     return g_next_shell_notify_icon_w ? g_next_shell_notify_icon_w(message, data) : FALSE;
 }
@@ -297,7 +305,15 @@ static BOOL WINAPI hooked_shell_notify_icon_a(DWORD message, PNOTIFYICONDATAA da
         return TRUE;
     }
     if (block_guid) {
-        return TRUE;
+        BOOL result = g_next_shell_notify_icon_a
+            ? g_next_shell_notify_icon_a(message, data)
+            : FALSE;
+        if (result &&
+            (message == NIM_ADD || message == NIM_MODIFY ||
+             message == NIM_SETVERSION)) {
+            g_next_shell_notify_icon_a(NIM_DELETE, data);
+        }
+        return result;
     }
     return g_next_shell_notify_icon_a ? g_next_shell_notify_icon_a(message, data) : FALSE;
 }
@@ -784,7 +800,8 @@ static void install_shell_notify_iat_hook(void) {
         return;
     }
 
-    if (_wcsicmp(g_process_name, L"explorer.exe") == 0) {
+    if (_wcsicmp(g_process_name, L"explorer.exe") == 0 ||
+        _wcsicmp(g_process_name, L"ChatGPT.exe") == 0) {
         g_next_shell_notify_icon_w = (ShellNotifyIconWFn)original_w;
         g_next_shell_notify_icon_a = (ShellNotifyIconAFn)original_a;
         if (install_inline_shell_hook((BYTE *)original_w, &g_inline_w_trampoline,

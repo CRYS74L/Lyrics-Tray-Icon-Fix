@@ -248,6 +248,12 @@ int tray_rule_process_uses_shell_notify_block(const wchar_t *exe_name) {
         return 0;
     }
 
+    for (int i = 0; i < tray_guid_rule_count(); ++i) {
+        if (equals_ignore_case(exe_name, kGuidRules[i].exe_name)) {
+            return 1;
+        }
+    }
+
     for (int i = 0; i < tray_block_uid_rule_count(); ++i) {
         if (equals_ignore_case(exe_name, kBlockUidRules[i].exe_name)) {
             return 1;

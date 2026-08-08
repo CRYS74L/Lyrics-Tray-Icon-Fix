@@ -9,11 +9,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.106"
+#define TOOL_VERSION L"v0.107"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.106.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.107.dll"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
@@ -1637,11 +1637,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.106.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.106.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.106.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.106.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.106.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.107.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.107.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.107.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.107.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.107.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {
