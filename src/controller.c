@@ -9,16 +9,16 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.113"
+#define TOOL_VERSION L"v0.114"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.113.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.114.dll"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
 #define PSTF_RESTORE_READY_EVENT_NAME L"Local\\LyricsTrayIconFixPstfRestoreReady"
-#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.113.exe"
+#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.114.exe"
 #define EXPLORER_WATCH_READY_EVENT_NAME L"Local\\LyricsTrayIconFixExplorerWatchReady"
 #define STARTUP_WATCH_MS 15000
 #define STARTUP_WATCH_INTERVAL_MS 50
@@ -1699,11 +1699,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.113.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.113.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.113.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.113.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.113.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.114.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.114.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.114.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.114.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.114.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {
