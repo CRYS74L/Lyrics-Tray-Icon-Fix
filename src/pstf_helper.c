@@ -2,10 +2,12 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include <stdio.h>
+#include <stdarg.h>
+#include <wchar.h>
 
 #define MAX_THREAD_HOOKS 32
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
-#define DLL_NAME L"Lyrics Tray Icon Fix PS Restore Hook v0.112.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix PS Restore Hook v0.113.dll"
 #define HOOK_INSTALLED_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
 #define PSTF_STARTUP_RETRY_MS 10000
 #define PSTF_STARTUP_RETRY_INTERVAL_MS 200
@@ -22,8 +24,38 @@ static HMODULE g_dll = NULL;
 static HOOKPROC g_hook_proc = NULL;
 static HANDLE g_hook_installed_event = NULL;
 static DWORD g_pstf_pid = 0;
+static wchar_t g_log_path[MAX_PATH];
 static ThreadHook g_thread_hooks[MAX_THREAD_HOOKS];
 static int g_thread_hook_count = 0;
+
+static void log_message(const wchar_t *format, ...) {
+    wchar_t wide[1024];
+    char utf8[4096];
+    va_list args;
+    HANDLE file;
+    DWORD written = 0;
+    int bytes;
+
+    if (!g_log_path[0]) {
+        return;
+    }
+    va_start(args, format);
+    _vsnwprintf(wide, sizeof(wide) / sizeof(wide[0]) - 1, format, args);
+    wide[(sizeof(wide) / sizeof(wide[0])) - 1] = L'\0';
+    va_end(args);
+    bytes = WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8,
+                                (int)sizeof(utf8), NULL, NULL);
+    if (bytes <= 1) {
+        return;
+    }
+    file = CreateFileW(g_log_path, FILE_APPEND_DATA,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                       OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file != INVALID_HANDLE_VALUE) {
+        WriteFile(file, utf8, (DWORD)(bytes - 1), &written, NULL);
+        CloseHandle(file);
+    }
+}
 
 static const wchar_t *base_name(const wchar_t *path) {
     const wchar_t *name = path;
@@ -41,6 +73,8 @@ static int is_pstf_process(DWORD pid) {
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     int match = 0;
     if (!process) {
+        log_message(L"is_pstf_process open failed pid=%lu error=%lu\n",
+                    pid, GetLastError());
         return 0;
     }
     if (QueryFullProcessImageNameW(process, 0, path, &size)) {
@@ -107,6 +141,8 @@ static void hook_thread(DWORD pid, DWORD thread_id) {
         HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid);
         HANDLE thread = OpenThread(SYNCHRONIZE, FALSE, thread_id);
         if (!process || !thread || !PostThreadMessageW(thread_id, WM_NULL, 0, 0)) {
+            log_message(L"hook_thread post/open failed pid=%lu tid=%lu error=%lu\n",
+                        pid, thread_id, GetLastError());
             if (thread) CloseHandle(thread);
             if (process) CloseHandle(process);
             UnhookWindowsHookEx(hook);
@@ -124,6 +160,10 @@ static void hook_thread(DWORD pid, DWORD thread_id) {
         } else {
             SetEvent(g_hook_installed_event);
         }
+        log_message(L"hook_thread installed pid=%lu tid=%lu\n", pid, thread_id);
+    } else {
+        log_message(L"hook_thread SetWindowsHookEx failed pid=%lu tid=%lu error=%lu\n",
+                    pid, thread_id, GetLastError());
     }
 }
 
@@ -210,6 +250,8 @@ static void inject_dll_into_pstf(DWORD pid, const wchar_t *dll_path) {
         PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | SYNCHRONIZE,
         FALSE, pid);
     if (!process) {
+        log_message(L"inject_dll OpenProcess failed pid=%lu error=%lu\n",
+                    pid, GetLastError());
         return;
     }
     size = (wcslen(dll_path) + 1) * sizeof(wchar_t);
@@ -217,6 +259,8 @@ static void inject_dll_into_pstf(DWORD pid, const wchar_t *dll_path) {
         process, NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!remote_path ||
         !WriteProcessMemory(process, remote_path, dll_path, size, &written)) {
+        log_message(L"inject_dll VirtualAlloc/WriteProcessMemory failed pid=%lu error=%lu\n",
+                    pid, GetLastError());
         if (remote_path) {
             VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
         }
@@ -232,6 +276,10 @@ static void inject_dll_into_pstf(DWORD pid, const wchar_t *dll_path) {
         if (thread) {
             WaitForSingleObject(thread, 5000);
             CloseHandle(thread);
+            log_message(L"inject_dll LoadLibrary thread finished pid=%lu\n", pid);
+        } else {
+            log_message(L"inject_dll CreateRemoteThread failed pid=%lu error=%lu\n",
+                        pid, GetLastError());
         }
     }
     VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
@@ -266,6 +314,8 @@ int wmain(void) {
         return 2;
     }
     exe_directory(directory, MAX_PATH);
+    _snwprintf(g_log_path, MAX_PATH - 1, L"%ls\\pstf-helper.log", directory);
+    g_log_path[MAX_PATH - 1] = L'\0';
     _snwprintf(dll_path, MAX_PATH - 1, L"%ls%ls", directory, DLL_NAME);
     dll_path[MAX_PATH - 1] = L'\0';
     g_dll = LoadLibraryW(dll_path);
@@ -286,9 +336,13 @@ int wmain(void) {
         return 4;
     }
 
+    win_event = SetWinEventHook(
+        EVENT_OBJECT_CREATE, EVENT_OBJECT_CREATE, NULL, pstf_win_event_proc,
+        0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     pstf_process = find_pstf_process(&pstf_pid);
     if (pstf_process) {
         g_pstf_pid = pstf_pid;
+        log_message(L"pstf found pid=%lu\n", pstf_pid);
         start = GetTickCount64();
         while (g_thread_hook_count == 0 &&
                GetTickCount64() - start < PSTF_STARTUP_RETRY_MS) {
@@ -300,9 +354,15 @@ int wmain(void) {
             Sleep(PSTF_STARTUP_RETRY_INTERVAL_MS);
         }
     }
-    win_event = SetWinEventHook(
-        EVENT_OBJECT_CREATE, EVENT_OBJECT_CREATE, NULL, pstf_win_event_proc,
-        0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    log_message(L"startup retry done pid=%lu hooks=%d\n",
+                pstf_pid, g_thread_hook_count);
+    {
+        MSG pending;
+        while (PeekMessageW(&pending, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&pending);
+            DispatchMessageW(&pending);
+        }
+    }
 
     for (;;) {
         DWORD wait;
