@@ -9,11 +9,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.102"
+#define TOOL_VERSION L"v0.103"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.102.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.103.dll"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
@@ -931,6 +931,7 @@ static DWORD WINAPI explorer_restart_cleanup_thread(LPVOID param) {
         if (WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
             break;
         }
+        sync_current_windows();
         cleanup_google_drive_duplicate_icons();
         if (WaitForSingleObject(stop_event, EXPLORER_CLEANUP_INTERVAL_MS) ==
             WAIT_OBJECT_0) {
@@ -1459,11 +1460,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.102.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.102.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.102.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.102.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.102.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.103.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.103.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.103.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.103.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.103.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {
