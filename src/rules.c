@@ -32,7 +32,13 @@ static const TrayRule kRules[] = {
 };
 
 static const GuidRule kGuidRules[] = {
-    { NULL, { 0 } },
+    {
+        L"ChatGPT.exe",
+        {
+            0xE5768D8B, 0x6936, 0x4F45,
+            { 0xB1, 0xAD, 0x4C, 0x5F, 0xB4, 0x14, 0xCB, 0x35 }
+        }
+    },
 };
 
 static const BlockUidRule kBlockUidRules[] = {
@@ -247,10 +253,6 @@ int tray_rule_process_uses_shell_notify_block(const wchar_t *exe_name) {
         return 0;
     }
 
-    if (_wcsicmp(exe_name, L"ChatGPT.exe") == 0) {
-        return 1;
-    }
-
     for (int i = 0; i < tray_guid_rule_count(); ++i) {
         if (equals_ignore_case(exe_name, kGuidRules[i].exe_name)) {
             return 1;
@@ -325,7 +327,7 @@ const wchar_t *tray_window_rule_text(int index) {
 }
 
 int tray_guid_rule_count(void) {
-    return 0;
+    return (int)(sizeof(kGuidRules) / sizeof(kGuidRules[0]));
 }
 
 const wchar_t *tray_guid_rule_exe(int index) {

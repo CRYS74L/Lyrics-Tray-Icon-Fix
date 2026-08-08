@@ -9,11 +9,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.103"
+#define TOOL_VERSION L"v0.104"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.103.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.104.dll"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
@@ -848,12 +848,44 @@ static BOOL CALLBACK scan_current_windows_proc(HWND hwnd, LPARAM lparam) {
     return TRUE;
 }
 
+static int guid_icon_exists(const GUID *guid) {
+    NOTIFYICONIDENTIFIER identifier;
+    RECT rect;
+
+    if (!guid) {
+        return 0;
+    }
+    ZeroMemory(&identifier, sizeof(identifier));
+    identifier.cbSize = sizeof(identifier);
+    identifier.guidItem = *guid;
+    return Shell_NotifyIconGetRect(&identifier, &rect) == S_OK;
+}
+
+static void delete_rule_guid_icons(CurrentScanContext *ctx) {
+    for (int i = 0; i < tray_guid_rule_count(); ++i) {
+        const GUID *guid = tray_guid_rule_guid(i);
+        NOTIFYICONDATAW data;
+
+        if (!guid || !guid_icon_exists(guid)) {
+            continue;
+        }
+        ZeroMemory(&data, sizeof(data));
+        data.cbSize = sizeof(data);
+        data.uFlags = NIF_GUID;
+        data.guidItem = *guid;
+        if (Shell_NotifyIconW(NIM_DELETE, &data)) {
+            ++ctx->hidden_guid_icons;
+        }
+    }
+}
+
 static CurrentScanContext sync_current_windows(void) {
     CurrentScanContext ctx;
     ctx.matches = 0;
     ctx.hidden_windows = 0;
     ctx.hidden_guid_icons = 0;
     EnumWindows(scan_current_windows_proc, (LPARAM)&ctx);
+    delete_rule_guid_icons(&ctx);
     return ctx;
 }
 
@@ -1460,11 +1492,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.103.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.103.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.103.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.103.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.103.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.104.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.104.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.104.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.104.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.104.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {

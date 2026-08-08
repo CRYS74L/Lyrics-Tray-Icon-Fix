@@ -207,9 +207,6 @@ static int should_block_guid_notify(DWORD message, const NOTIFYICONDATAW *data) 
     if (message != NIM_ADD && message != NIM_MODIFY && message != NIM_SETVERSION) {
         return 0;
     }
-    if (_wcsicmp(g_process_name, L"ChatGPT.exe") == 0) {
-        return 1;
-    }
     if (_wcsicmp(g_process_name, L"GoogleDriveFS.exe") == 0) {
         return !same_guid(&data->guidItem, &kGoogleDrivePreservedGuid);
     }
@@ -282,9 +279,6 @@ static int should_block_guid_notify_a(DWORD message, const NOTIFYICONDATAA *data
     }
     if (message != NIM_ADD && message != NIM_MODIFY && message != NIM_SETVERSION) {
         return 0;
-    }
-    if (_wcsicmp(g_process_name, L"ChatGPT.exe") == 0) {
-        return 1;
     }
     if (_wcsicmp(g_process_name, L"GoogleDriveFS.exe") == 0) {
         return !same_guid(&data->guidItem, &kGoogleDrivePreservedGuid);

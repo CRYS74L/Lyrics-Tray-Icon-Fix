@@ -83,6 +83,7 @@ int main(void) {
     failures += expect_target(L"BetterLyrics.WinUI3.exe", 1, "betterlyrics target process");
     failures += expect_target(L"explorer.exe", 1, "explorer target process");
     failures += expect_target(L"GoogleDriveFS.exe", 1, "google drive target process");
+    failures += expect_target(L"ChatGPT.exe", 1, "chatgpt target process");
     failures += expect_target(L"Other.exe", 0, "other process is ignored");
     failures += expect_shell_block(L"Lyricify Lite.exe", 0, "lyricify keeps message hook route");
     failures += expect_shell_block(L"BetterLyrics.WinUI3.exe", 0, "betterlyrics keeps message hook route");
@@ -90,6 +91,7 @@ int main(void) {
     failures += expect_message_hook(L"BetterLyrics.WinUI3.exe", 1, "betterlyrics keeps late cleanup hook");
     failures += expect_shell_block(L"explorer.exe", 1, "explorer creation block");
     failures += expect_shell_block(L"GoogleDriveFS.exe", 0, "google drive creation block is disabled");
+    failures += expect_shell_block(L"ChatGPT.exe", 1, "chatgpt exact guid creation block");
     failures += expect_shell_block(L"Other.exe", 0, "other process no creation block");
 
     failures += expect_match(L"Lyricify Lite.exe", L"H.NotifyIcon_e87a2320-3a24-461c-99f6-c38bf4eb8d8b", 0, 1, "lyricify wrong icon");
@@ -124,6 +126,25 @@ int main(void) {
     failures += expect_hide_window(L"GoogleDriveFS.exe", L"ATL:00007FF7481AE710", L"", 0, "google drive normal atl window is not hidden");
     failures += expect_hide_window(L"Other.exe", L"DriveDot", L"Google Drive live edit status", 0, "drive dot rule requires exe");
     failures += expect_guid(L"GoogleDriveFS.exe", 0, "google drive guid icon is kept");
+    {
+        GUID chatgpt_guid = { 0 };
+        int found = tray_rule_guid_for_process(L"ChatGPT.exe", &chatgpt_guid);
+        if (!found ||
+            chatgpt_guid.Data1 != 0xE5768D8B ||
+            chatgpt_guid.Data2 != 0x6936 ||
+            chatgpt_guid.Data3 != 0x4F45 ||
+            chatgpt_guid.Data4[0] != 0xB1 ||
+            chatgpt_guid.Data4[1] != 0xAD ||
+            chatgpt_guid.Data4[2] != 0x4C ||
+            chatgpt_guid.Data4[3] != 0x5F ||
+            chatgpt_guid.Data4[4] != 0xB4 ||
+            chatgpt_guid.Data4[5] != 0x14 ||
+            chatgpt_guid.Data4[6] != 0xCB ||
+            chatgpt_guid.Data4[7] != 0x35) {
+            printf("FAIL chatgpt guid rule\n");
+            ++failures;
+        }
+    }
     failures += expect_guid(L"Other.exe", 0, "guid rule requires exe");
 
     if (failures) {
