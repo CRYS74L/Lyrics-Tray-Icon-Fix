@@ -9,11 +9,11 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.105"
+#define TOOL_VERSION L"v0.106"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.105.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.106.dll"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
@@ -24,6 +24,9 @@
 #define EXPLORER_CLEANUP_MS 60000
 #define EXPLORER_CLEANUP_INTERVAL_MS 200
 #define MAX_GD_WATCH_PROCESSES 16
+#define CHATGPT_CLEANUP_MS 10000
+#define CHATGPT_CLEANUP_INTERVAL_MS 200
+#define CHATGPT_UID_SCAN_LIMIT 1024
 
 typedef struct SyncWorkerContext {
     HANDLE stop_event;
@@ -61,11 +64,14 @@ static volatile LONG g_shutdown_requested = 0;
 static HANDLE g_startup_watcher_thread = NULL;
 static HANDLE g_explorer_cleanup_thread = NULL;
 static HANDLE g_google_drive_watcher_thread = NULL;
+static HANDLE g_chatgpt_cleanup_thread = NULL;
+static HANDLE g_chatgpt_appeared_event = NULL;
 static HANDLE g_google_drive_appeared_event = NULL;
 static HANDLE g_service_stop_event = NULL;
 
 static int event_is_signaled(const wchar_t *name);
 static CurrentScanContext sync_current_windows(void);
+static void start_chatgpt_cleanup(void);
 
 static void write_utf8(HANDLE handle, const wchar_t *format, ...) {
     wchar_t wide[2048];
@@ -540,11 +546,14 @@ static void hook_existing_target_processes(void) {
                 continue;
             }
             int newly_added = add_known_target_pid(entry.th32ProcessID);
-            hook_target_process_threads(entry.th32ProcessID);
-            if (newly_added &&
-                _wcsicmp(entry.szExeFile, L"ChatGPT.exe") == 0) {
-                sync_current_windows();
+            if (tray_rule_process_uses_message_hook(entry.szExeFile) ||
+                tray_rule_process_uses_shell_notify_block(entry.szExeFile)) {
+                hook_target_process_threads(entry.th32ProcessID);
             }
+            if (_wcsicmp(entry.szExeFile, L"ChatGPT.exe") == 0) {
+                start_chatgpt_cleanup();
+            }
+            (void)newly_added;
         } while (Process32NextW(snapshot, &entry));
     }
     CloseHandle(snapshot);
@@ -564,17 +573,21 @@ static void hook_target_window(HWND hwnd) {
     }
     if (known_target_pid(pid) || pid_is_target_process(pid)) {
         int newly_added = add_known_target_pid(pid);
-        hook_target_process_threads(pid);
-        if (newly_added &&
-            get_process_base_name(pid, process_name, MAX_PATH) &&
-            _wcsicmp(process_name, L"ChatGPT.exe") == 0) {
-            sync_current_windows();
+        if (get_process_base_name(pid, process_name, MAX_PATH)) {
+            if (tray_rule_process_uses_message_hook(process_name) ||
+                tray_rule_process_uses_shell_notify_block(process_name)) {
+                hook_target_process_threads(pid);
+            }
+            if (_wcsicmp(process_name, L"ChatGPT.exe") == 0) {
+                start_chatgpt_cleanup();
+            }
         }
         if (g_google_drive_appeared_event &&
             get_process_base_name(pid, process_name, MAX_PATH) &&
             _wcsicmp(process_name, L"GoogleDriveFS.exe") == 0) {
             SetEvent(g_google_drive_appeared_event);
         }
+        (void)newly_added;
     }
 }
 
@@ -802,14 +815,16 @@ static BOOL CALLBACK scan_current_windows_proc(HWND hwnd, LPARAM lparam) {
     }
 
     if (tray_rule_guid_for_process(exe_name, &guid)) {
-        NOTIFYICONDATAW data;
-        ZeroMemory(&data, sizeof(data));
-        data.cbSize = sizeof(data);
-        data.hWnd = hwnd;
-        data.uFlags = NIF_GUID;
-        data.guidItem = guid;
-        if (Shell_NotifyIconW(NIM_DELETE, &data)) {
-            ++ctx->hidden_guid_icons;
+        if (_wcsicmp(exe_name, L"ChatGPT.exe") != 0) {
+            NOTIFYICONDATAW data;
+            ZeroMemory(&data, sizeof(data));
+            data.cbSize = sizeof(data);
+            data.hWnd = hwnd;
+            data.uFlags = NIF_GUID;
+            data.guidItem = guid;
+            if (Shell_NotifyIconW(NIM_DELETE, &data)) {
+                ++ctx->hidden_guid_icons;
+            }
         }
     }
 
@@ -868,11 +883,75 @@ static int guid_icon_exists(const GUID *guid) {
     return Shell_NotifyIconGetRect(&identifier, &rect) == S_OK;
 }
 
-static void delete_rule_guid_icons(CurrentScanContext *ctx) {
+static BOOL CALLBACK chatgpt_uid_probe_proc(HWND hwnd, LPARAM lparam) {
+    DWORD pid = 0;
+    wchar_t exe_name[MAX_PATH];
+    int *found = (int *)lparam;
+
+    if (!found) {
+        return FALSE;
+    }
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (!pid || !get_process_base_name(pid, exe_name, MAX_PATH) ||
+        _wcsicmp(exe_name, L"ChatGPT.exe") != 0) {
+        return TRUE;
+    }
+
+    for (unsigned int uid = 0; uid < CHATGPT_UID_SCAN_LIMIT; ++uid) {
+        NOTIFYICONIDENTIFIER identifier;
+        RECT rect;
+
+        ZeroMemory(&identifier, sizeof(identifier));
+        identifier.cbSize = sizeof(identifier);
+        identifier.hWnd = hwnd;
+        identifier.uID = uid;
+        if (Shell_NotifyIconGetRect(&identifier, &rect) == S_OK) {
+            *found = 1;
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static int chatgpt_has_uid_icon(void) {
+    int found = 0;
+    EnumWindows(chatgpt_uid_probe_proc, (LPARAM)&found);
+    return found;
+}
+
+static void cleanup_chatgpt_duplicate_icons(CurrentScanContext *ctx) {
+    if (!chatgpt_has_uid_icon()) {
+        return;
+    }
+
     for (int i = 0; i < tray_guid_rule_count(); ++i) {
+        const wchar_t *exe = tray_guid_rule_exe(i);
         const GUID *guid = tray_guid_rule_guid(i);
         NOTIFYICONDATAW data;
 
+        if (_wcsicmp(exe, L"ChatGPT.exe") != 0 || !guid ||
+            !guid_icon_exists(guid)) {
+            continue;
+        }
+        ZeroMemory(&data, sizeof(data));
+        data.cbSize = sizeof(data);
+        data.uFlags = NIF_GUID;
+        data.guidItem = *guid;
+        if (Shell_NotifyIconW(NIM_DELETE, &data) && ctx) {
+            ++ctx->hidden_guid_icons;
+        }
+    }
+}
+
+static void delete_rule_guid_icons(CurrentScanContext *ctx) {
+    for (int i = 0; i < tray_guid_rule_count(); ++i) {
+        const wchar_t *exe = tray_guid_rule_exe(i);
+        const GUID *guid = tray_guid_rule_guid(i);
+        NOTIFYICONDATAW data;
+
+        if (_wcsicmp(exe, L"ChatGPT.exe") == 0) {
+            continue;
+        }
         if (!guid || !guid_icon_exists(guid)) {
             continue;
         }
@@ -893,6 +972,7 @@ static CurrentScanContext sync_current_windows(void) {
     ctx.hidden_guid_icons = 0;
     EnumWindows(scan_current_windows_proc, (LPARAM)&ctx);
     delete_rule_guid_icons(&ctx);
+    cleanup_chatgpt_duplicate_icons(&ctx);
     return ctx;
 }
 
@@ -988,6 +1068,50 @@ static void start_duplicate_cleanup_thread(void) {
     }
     g_explorer_cleanup_thread = CreateThread(
         NULL, 0, explorer_restart_cleanup_thread, g_service_stop_event, 0, NULL);
+}
+
+static DWORD WINAPI chatgpt_cleanup_thread(LPVOID param) {
+    HANDLE appeared_event = (HANDLE)param;
+
+    for (;;) {
+        HANDLE handles[2];
+        DWORD wait;
+
+        if (!g_service_stop_event || !appeared_event) {
+            break;
+        }
+        handles[0] = g_service_stop_event;
+        handles[1] = appeared_event;
+        wait = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+        if (wait == WAIT_OBJECT_0) {
+            break;
+        }
+        if (wait != WAIT_OBJECT_0 + 1) {
+            Sleep(100);
+            continue;
+        }
+        ResetEvent(appeared_event);
+
+        ULONGLONG start = GetTickCount64();
+        while (GetTickCount64() - start < CHATGPT_CLEANUP_MS) {
+            if (WaitForSingleObject(g_service_stop_event, 0) == WAIT_OBJECT_0) {
+                return 0;
+            }
+            cleanup_chatgpt_duplicate_icons(NULL);
+            if (WaitForSingleObject(g_service_stop_event,
+                                    CHATGPT_CLEANUP_INTERVAL_MS) ==
+                WAIT_OBJECT_0) {
+                return 0;
+            }
+        }
+    }
+    return 0;
+}
+
+static void start_chatgpt_cleanup(void) {
+    if (g_chatgpt_appeared_event) {
+        SetEvent(g_chatgpt_appeared_event);
+    }
 }
 
 static DWORD WINAPI google_drive_watcher_thread(LPVOID param) {
@@ -1319,6 +1443,11 @@ static int command_start(void) {
     g_shutdown_stop_event = stop_event;
     g_service_stop_event = stop_event;
     g_google_drive_appeared_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    g_chatgpt_appeared_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (g_chatgpt_appeared_event) {
+        g_chatgpt_cleanup_thread = CreateThread(
+            NULL, 0, chatgpt_cleanup_thread, g_chatgpt_appeared_event, 0, NULL);
+    }
     cleanup_stale_google_drive_ps_rules();
 
     wchar_t dir[MAX_PATH];
@@ -1463,6 +1592,15 @@ static int command_start(void) {
         CloseHandle(g_explorer_cleanup_thread);
         g_explorer_cleanup_thread = NULL;
     }
+    if (g_chatgpt_cleanup_thread) {
+        WaitForSingleObject(g_chatgpt_cleanup_thread, 3000);
+        CloseHandle(g_chatgpt_cleanup_thread);
+        g_chatgpt_cleanup_thread = NULL;
+    }
+    if (g_chatgpt_appeared_event) {
+        CloseHandle(g_chatgpt_appeared_event);
+        g_chatgpt_appeared_event = NULL;
+    }
     if (g_google_drive_watcher_thread) {
         WaitForSingleObject(g_google_drive_watcher_thread, 3000);
         CloseHandle(g_google_drive_watcher_thread);
@@ -1499,11 +1637,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.105.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.105.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.105.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.105.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.105.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.106.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.106.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.106.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.106.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.106.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {

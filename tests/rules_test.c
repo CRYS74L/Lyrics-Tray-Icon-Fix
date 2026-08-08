@@ -39,6 +39,15 @@ static int expect_shell_block(const wchar_t *exe, int expected, const char *name
     return 0;
 }
 
+static int expect_startup_cleanup(const wchar_t *exe, int expected, const char *name) {
+    int actual = tray_rule_process_uses_startup_cleanup(exe);
+    if (actual != expected) {
+        printf("FAIL %s: expected %d got %d\n", name, expected, actual);
+        return 1;
+    }
+    return 0;
+}
+
 static int expect_hide_window(const wchar_t *exe, const wchar_t *class_name, const wchar_t *window_text, int expected, const char *name) {
     int actual = tray_rule_should_hide_window(exe, class_name, window_text);
     if (actual != expected) {
@@ -91,7 +100,9 @@ int main(void) {
     failures += expect_message_hook(L"BetterLyrics.WinUI3.exe", 1, "betterlyrics keeps late cleanup hook");
     failures += expect_shell_block(L"explorer.exe", 1, "explorer creation block");
     failures += expect_shell_block(L"GoogleDriveFS.exe", 0, "google drive creation block is disabled");
-    failures += expect_shell_block(L"ChatGPT.exe", 1, "chatgpt exact guid creation block");
+    failures += expect_shell_block(L"ChatGPT.exe", 0, "chatgpt no longer uses in-process shell hook");
+    failures += expect_startup_cleanup(L"ChatGPT.exe", 1, "chatgpt uses bounded startup cleanup");
+    failures += expect_startup_cleanup(L"Other.exe", 0, "other process no startup cleanup");
     failures += expect_shell_block(L"Other.exe", 0, "other process no creation block");
 
     failures += expect_match(L"Lyricify Lite.exe", L"H.NotifyIcon_e87a2320-3a24-461c-99f6-c38bf4eb8d8b", 0, 1, "lyricify wrong icon");

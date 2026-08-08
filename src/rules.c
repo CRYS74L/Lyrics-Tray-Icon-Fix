@@ -212,7 +212,8 @@ int tray_rule_block_uid_uses_message_hook(int index) {
 
 int tray_rule_process_is_target(const wchar_t *exe_name) {
     return tray_rule_process_uses_message_hook(exe_name) ||
-           tray_rule_process_uses_shell_notify_block(exe_name);
+           tray_rule_process_uses_shell_notify_block(exe_name) ||
+           tray_rule_process_uses_startup_cleanup(exe_name);
 }
 
 int tray_rule_process_uses_message_hook(const wchar_t *exe_name) {
@@ -232,12 +233,6 @@ int tray_rule_process_uses_message_hook(const wchar_t *exe_name) {
         }
     }
 
-    for (int i = 0; i < tray_guid_rule_count(); ++i) {
-        if (equals_ignore_case(exe_name, kGuidRules[i].exe_name)) {
-            return 1;
-        }
-    }
-
     for (int i = 0; i < tray_block_uid_rule_count(); ++i) {
         if (kBlockUidRules[i].use_message_hook &&
             equals_ignore_case(exe_name, kBlockUidRules[i].exe_name)) {
@@ -253,14 +248,22 @@ int tray_rule_process_uses_shell_notify_block(const wchar_t *exe_name) {
         return 0;
     }
 
-    for (int i = 0; i < tray_guid_rule_count(); ++i) {
-        if (equals_ignore_case(exe_name, kGuidRules[i].exe_name)) {
+    for (int i = 0; i < tray_block_uid_rule_count(); ++i) {
+        if (equals_ignore_case(exe_name, kBlockUidRules[i].exe_name)) {
             return 1;
         }
     }
 
-    for (int i = 0; i < tray_block_uid_rule_count(); ++i) {
-        if (equals_ignore_case(exe_name, kBlockUidRules[i].exe_name)) {
+    return 0;
+}
+
+int tray_rule_process_uses_startup_cleanup(const wchar_t *exe_name) {
+    if (!exe_name) {
+        return 0;
+    }
+
+    for (int i = 0; i < tray_guid_rule_count(); ++i) {
+        if (equals_ignore_case(exe_name, kGuidRules[i].exe_name)) {
             return 1;
         }
     }
