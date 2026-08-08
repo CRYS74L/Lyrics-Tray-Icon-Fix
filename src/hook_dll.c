@@ -1112,17 +1112,22 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
             }
             if (tray_rule_process_uses_shell_notify_block(g_process_name)) {
                 install_shell_notify_iat_hook();
-                if (_wcsicmp(g_process_name, L"GoogleDriveFS.exe") == 0) {
-                    HANDLE thread = CreateThread(
-                        NULL, 0, google_drive_cleanup_thread, NULL, 0, NULL);
-                    if (thread) {
-                        g_google_cleanup_thread_handle = thread;
-                    }
-                    thread = CreateThread(
-                        NULL, 0, google_drive_event_thread, NULL, 0, NULL);
-                    if (thread) {
-                        g_google_event_thread_handle = thread;
-                    }
+            }
+            if (_wcsicmp(g_process_name, L"GoogleDriveFS.exe") == 0) {
+                if (!g_shell_notify_ready_event) {
+                    g_shell_notify_ready_event = CreateEventW(
+                        NULL, TRUE, TRUE,
+                        L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady");
+                }
+                HANDLE thread = CreateThread(
+                    NULL, 0, google_drive_cleanup_thread, NULL, 0, NULL);
+                if (thread) {
+                    g_google_cleanup_thread_handle = thread;
+                }
+                thread = CreateThread(
+                    NULL, 0, google_drive_event_thread, NULL, 0, NULL);
+                if (thread) {
+                    g_google_event_thread_handle = thread;
                 }
             }
         }

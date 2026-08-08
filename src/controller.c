@@ -9,15 +9,16 @@
 
 #include "rules.h"
 
-#define TOOL_VERSION L"v0.110"
+#define TOOL_VERSION L"v0.111"
 #define MUTEX_NAME L"Local\\LyricsTrayIconFixMutex"
 #define STOP_EVENT_NAME L"Local\\LyricsTrayIconFixStop"
 #define SYNC_EVENT_NAME L"Local\\LyricsTrayIconFixSync"
-#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.110.dll"
+#define DLL_NAME L"Lyrics Tray Icon Fix Hook v0.111.dll"
 #define EXPLORER_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockExplorerReady"
 #define GOOGLE_DRIVE_HOOK_READY_EVENT_NAME L"Local\\LyricsTrayIconFixShellBlockGoogleDriveReady"
 #define PSTF_THREAD_HOOK_EVENT_NAME L"Local\\LyricsTrayIconFixPstfThreadHookInstalled"
 #define PSTF_RESTORE_READY_EVENT_NAME L"Local\\LyricsTrayIconFixPstfRestoreReady"
+#define PSTF_HELPER_NAME L"Lyrics Tray Icon Fix PS Restore Helper v0.111.exe"
 #define EXPLORER_WATCH_READY_EVENT_NAME L"Local\\LyricsTrayIconFixExplorerWatchReady"
 #define STARTUP_WATCH_MS 15000
 #define STARTUP_WATCH_INTERVAL_MS 50
@@ -72,6 +73,7 @@ static HANDLE g_service_stop_event = NULL;
 static int event_is_signaled(const wchar_t *name);
 static CurrentScanContext sync_current_windows(void);
 static void start_chatgpt_cleanup(void);
+static void launch_pstf_helper(void);
 
 static void write_utf8(HANDLE handle, const wchar_t *format, ...) {
     wchar_t wide[2048];
@@ -523,6 +525,57 @@ static void inject_dll_into_process(DWORD pid) {
     CloseHandle(process);
 }
 
+static int pstf_helper_process_exists(void) {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    PROCESSENTRY32W entry;
+    int found = 0;
+
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    ZeroMemory(&entry, sizeof(entry));
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (_wcsicmp(entry.szExeFile, PSTF_HELPER_NAME) == 0) {
+                found = 1;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    return found;
+}
+
+static void launch_pstf_helper(void) {
+    wchar_t directory[MAX_PATH];
+    wchar_t helper_path[MAX_PATH];
+    wchar_t command_line[MAX_PATH * 2];
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION process;
+
+    if (pstf_helper_process_exists()) {
+        return;
+    }
+    exe_directory(directory, MAX_PATH);
+    _snwprintf(helper_path, MAX_PATH - 1, L"%ls\\%ls", directory, PSTF_HELPER_NAME);
+    helper_path[MAX_PATH - 1] = L'\0';
+    if (GetFileAttributesW(helper_path) == INVALID_FILE_ATTRIBUTES) {
+        return;
+    }
+    _snwprintf(command_line, (sizeof(command_line) / sizeof(command_line[0])) - 1,
+               L"\"%ls\"", helper_path);
+    command_line[(sizeof(command_line) / sizeof(command_line[0])) - 1] = L'\0';
+    ZeroMemory(&startup, sizeof(startup));
+    ZeroMemory(&process, sizeof(process));
+    startup.cb = sizeof(startup);
+    if (CreateProcessW(NULL, command_line, NULL, NULL, FALSE, CREATE_NO_WINDOW,
+                       NULL, directory, &startup, &process)) {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+}
+
 static void hook_existing_target_processes(void) {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     PROCESSENTRY32W entry;
@@ -540,9 +593,15 @@ static void hook_existing_target_processes(void) {
     if (Process32FirstW(snapshot, &entry)) {
         do {
             DWORD candidate_session = 0;
-            if (!tray_rule_process_is_target(entry.szExeFile) ||
-                !ProcessIdToSessionId(entry.th32ProcessID, &candidate_session) ||
+            if (!ProcessIdToSessionId(entry.th32ProcessID, &candidate_session) ||
                 candidate_session != current_session) {
+                continue;
+            }
+            if (_wcsicmp(entry.szExeFile, L"PSTrayFactory.exe") == 0) {
+                launch_pstf_helper();
+                continue;
+            }
+            if (!tray_rule_process_is_target(entry.szExeFile)) {
                 continue;
             }
             int newly_added = add_known_target_pid(entry.th32ProcessID);
@@ -571,9 +630,9 @@ static void hook_target_window(HWND hwnd) {
     if (find_target_thread_hook(pid, thread_id)) {
         return;
     }
-    if (known_target_pid(pid) || pid_is_target_process(pid)) {
-        int newly_added = add_known_target_pid(pid);
-        if (get_process_base_name(pid, process_name, MAX_PATH)) {
+    if (get_process_base_name(pid, process_name, MAX_PATH)) {
+        if (known_target_pid(pid) || pid_is_target_process(pid)) {
+            int newly_added = add_known_target_pid(pid);
             if (tray_rule_process_uses_message_hook(process_name) ||
                 tray_rule_process_uses_shell_notify_block(process_name)) {
                 hook_target_process_threads(pid);
@@ -581,13 +640,15 @@ static void hook_target_window(HWND hwnd) {
             if (_wcsicmp(process_name, L"ChatGPT.exe") == 0) {
                 start_chatgpt_cleanup();
             }
+            if (g_google_drive_appeared_event &&
+                _wcsicmp(process_name, L"GoogleDriveFS.exe") == 0) {
+                SetEvent(g_google_drive_appeared_event);
+            }
+            (void)newly_added;
         }
-        if (g_google_drive_appeared_event &&
-            get_process_base_name(pid, process_name, MAX_PATH) &&
-            _wcsicmp(process_name, L"GoogleDriveFS.exe") == 0) {
-            SetEvent(g_google_drive_appeared_event);
+        if (_wcsicmp(process_name, L"PSTrayFactory.exe") == 0) {
+            launch_pstf_helper();
         }
-        (void)newly_added;
     }
 }
 
@@ -1506,6 +1567,7 @@ static int command_start(void) {
     g_call_proc = call_proc;
     g_msg_proc = msg_proc;
     install_target_thread_hooks();
+    launch_pstf_helper();
     g_startup_watcher_thread = CreateThread(
         NULL, 0, startup_target_watcher, stop_event, 0, NULL);
     g_google_drive_watcher_thread = CreateThread(
@@ -1637,11 +1699,11 @@ static int command_start(void) {
 static void usage(void) {
     print_rules();
     out(L"\nUsage:\n");
-    out(L"  Lyrics Tray Icon Fix v0.110.exe start   start PS Tray Factory route\n");
-    out(L"  Lyrics Tray Icon Fix v0.110.exe stop    stop background hooks\n");
-    out(L"  Lyrics Tray Icon Fix v0.110.exe apply   sync current rules once\n");
-    out(L"  Lyrics Tray Icon Fix v0.110.exe status  show status\n");
-    out(L"  Lyrics Tray Icon Fix v0.110.exe recover  internal bounded Shell recovery\n");
+    out(L"  Lyrics Tray Icon Fix v0.111.exe start   start PS Tray Factory route\n");
+    out(L"  Lyrics Tray Icon Fix v0.111.exe stop    stop background hooks\n");
+    out(L"  Lyrics Tray Icon Fix v0.111.exe apply   sync current rules once\n");
+    out(L"  Lyrics Tray Icon Fix v0.111.exe status  show status\n");
+    out(L"  Lyrics Tray Icon Fix v0.111.exe recover  internal bounded Shell recovery\n");
 }
 
 int wmain(int argc, wchar_t **argv) {
