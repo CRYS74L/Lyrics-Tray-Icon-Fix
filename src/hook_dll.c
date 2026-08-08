@@ -80,6 +80,7 @@ static HANDLE g_message_event_thread_handle = NULL;
 
 #define LYRICIFY_CLEANUP_MS 10000
 #define LYRICIFY_CLEANUP_INTERVAL_MS 200
+#define CHATGPT_UID_SCAN_LIMIT 1024
 static HWND g_lyricify_cleanup_hwnd = NULL;
 static volatile LONG g_lyricify_cleanup_started = 0;
 static HANDLE g_lyricify_cleanup_stop_event = NULL;
@@ -196,6 +197,63 @@ static int same_guid(const GUID *a, const GUID *b) {
            a->Data4[7] == b->Data4[7];
 }
 
+static BOOL CALLBACK chatgpt_uid_probe_proc(HWND hwnd, LPARAM lparam) {
+    DWORD pid = 0;
+    int *found = (int *)lparam;
+
+    if (!found) {
+        return FALSE;
+    }
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != GetCurrentProcessId()) {
+        return TRUE;
+    }
+
+    for (unsigned int uid = 0; uid < CHATGPT_UID_SCAN_LIMIT; ++uid) {
+        NOTIFYICONIDENTIFIER identifier;
+        RECT rect;
+
+        ZeroMemory(&identifier, sizeof(identifier));
+        identifier.cbSize = sizeof(identifier);
+        identifier.hWnd = hwnd;
+        identifier.uID = uid;
+        if (Shell_NotifyIconGetRect(&identifier, &rect) == S_OK) {
+            *found = 1;
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static int chatgpt_has_uid_icon(void) {
+    int found = 0;
+
+    if (_wcsicmp(g_process_name, L"ChatGPT.exe") != 0) {
+        return 0;
+    }
+    EnumWindows(chatgpt_uid_probe_proc, (LPARAM)&found);
+    return found;
+}
+
+static void delete_chatgpt_rule_guid_icon_if_exists(void) {
+    GUID rule_guid;
+    NOTIFYICONDATAW data;
+
+    if (_wcsicmp(g_process_name, L"ChatGPT.exe") != 0 ||
+        !tray_rule_guid_for_process(g_process_name, &rule_guid) ||
+        !guid_icon_exists(&rule_guid)) {
+        return;
+    }
+
+    ZeroMemory(&data, sizeof(data));
+    data.cbSize = sizeof(data);
+    data.uFlags = NIF_GUID;
+    data.guidItem = rule_guid;
+    if (g_next_shell_notify_icon_w) {
+        g_next_shell_notify_icon_w(NIM_DELETE, &data);
+    }
+}
+
 
 
 static int should_block_guid_notify(DWORD message, const NOTIFYICONDATAW *data) {
@@ -251,11 +309,22 @@ static BOOL WINAPI hooked_shell_notify_icon_w(DWORD message, PNOTIFYICONDATAW da
         if (result &&
             (message == NIM_ADD || message == NIM_MODIFY ||
              message == NIM_SETVERSION)) {
-            g_next_shell_notify_icon_w(NIM_DELETE, data);
+            if (chatgpt_has_uid_icon()) {
+                g_next_shell_notify_icon_w(NIM_DELETE, data);
+            }
         }
         return result;
     }
-    return g_next_shell_notify_icon_w ? g_next_shell_notify_icon_w(message, data) : FALSE;
+    BOOL result = g_next_shell_notify_icon_w
+        ? g_next_shell_notify_icon_w(message, data)
+        : FALSE;
+    if (result &&
+        (message == NIM_ADD || message == NIM_MODIFY ||
+         message == NIM_SETVERSION) &&
+        data && !(data->uFlags & NIF_GUID)) {
+        delete_chatgpt_rule_guid_icon_if_exists();
+    }
+    return result;
 }
 
 static int should_block_uid_notify_a(DWORD message, const NOTIFYICONDATAA *data) {
@@ -311,11 +380,22 @@ static BOOL WINAPI hooked_shell_notify_icon_a(DWORD message, PNOTIFYICONDATAA da
         if (result &&
             (message == NIM_ADD || message == NIM_MODIFY ||
              message == NIM_SETVERSION)) {
-            g_next_shell_notify_icon_a(NIM_DELETE, data);
+            if (chatgpt_has_uid_icon()) {
+                g_next_shell_notify_icon_a(NIM_DELETE, data);
+            }
         }
         return result;
     }
-    return g_next_shell_notify_icon_a ? g_next_shell_notify_icon_a(message, data) : FALSE;
+    BOOL result = g_next_shell_notify_icon_a
+        ? g_next_shell_notify_icon_a(message, data)
+        : FALSE;
+    if (result &&
+        (message == NIM_ADD || message == NIM_MODIFY ||
+         message == NIM_SETVERSION) &&
+        data && !(data->uFlags & NIF_GUID)) {
+        delete_chatgpt_rule_guid_icon_if_exists();
+    }
+    return result;
 }
 
 static BOOL CALLBACK google_drive_cleanup_proc(HWND hwnd, LPARAM lparam) {
